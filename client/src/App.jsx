@@ -13,11 +13,13 @@ import Register from './pages/auth/Register';
 // User
 import Dashboard from './pages/user/Dashboard';
 import Quizzes from './pages/user/Quizzes';
+import MyQuizzes from './pages/user/MyQuizzes';
 import QuizDetails from './pages/user/QuizDetails';
 import QuizCreate from './pages/user/QuizCreate';
 import QuizAttempt from './pages/user/QuizAttempt';
 import QuizResults from './pages/user/QuizResults';
 import Polls from './pages/user/Polls';
+import MyPolls from './pages/user/MyPolls';
 import PollCreate from './pages/user/PollCreate';
 import PollDetails from './pages/user/PollDetails';
 import Leaderboard from './pages/user/Leaderboard';
@@ -71,6 +73,7 @@ export default function App() {
         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/quizzes" element={<Quizzes />} />
+          <Route path="/my-quizzes" element={<MyQuizzes />} />
           <Route path="/quizzes/create" element={<QuizCreate />} />
           <Route path="/quizzes/:id" element={<QuizDetails />} />
           <Route path="/quizzes/:id/edit" element={<QuizCreate />} />
@@ -78,6 +81,7 @@ export default function App() {
           <Route path="/quizzes/:id/results/:attemptId" element={<QuizResults />} />
 
           <Route path="/polls" element={<Polls />} />
+          <Route path="/my-polls" element={<MyPolls />} />
           <Route path="/polls/create" element={<PollCreate />} />
           <Route path="/polls/:id" element={<PollDetails />} />
 

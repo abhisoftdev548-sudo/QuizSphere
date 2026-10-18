@@ -19,11 +19,24 @@ export const createQuizSchema = z.object({
   isPublic: z.boolean().default(true),
   questions: z.array(z.object({
     text: z.string().min(3).max(1000),
-    type: z.enum(['multiple-choice', 'true-false', 'single-choice']).default('multiple-choice'),
-    options: z.array(optionSchema).min(2).max(6).refine(opts => opts.some(o => o.isCorrect), { message: 'At least one correct option required' }),
+    type: z.enum(['multiple-choice', 'true-false', 'single-choice', 'fill-blank']).default('multiple-choice'),
+    options: z.array(optionSchema).min(0).max(6).optional(),
+    correctAnswer: z.string().max(500).optional(),
     explanation: z.string().max(1000).optional(),
     points: z.number().min(1).max(100).default(10),
     order: z.number().optional()
+  }).superRefine((q, ctx) => {
+    if (q.type === 'fill-blank') {
+      if (!q.correctAnswer || q.correctAnswer.trim().length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Correct answer required for fill in the blank', path: ['correctAnswer'] });
+      }
+    } else {
+      if (!q.options || q.options.length < 2) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'At least 2 options required', path: ['options'] });
+      } else if (!q.options.some(o => o.isCorrect)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'At least one correct option required', path: ['options'] });
+      }
+    }
   })).min(1).max(50)
 });
 
@@ -39,8 +52,13 @@ export const reviewQuizSchema = z.object({
 export const attemptQuizSchema = z.object({
   answers: z.array(z.object({
     questionId: z.string(),
-    selectedOptionIndexes: z.array(z.number().min(0)).min(1),
+    selectedOptionIndexes: z.array(z.number().min(0)).optional(),
+    textAnswer: z.string().max(500).optional(),
     timeSpent: z.number().min(0).optional()
+  }).superRefine((a, ctx) => {
+    if ((!a.selectedOptionIndexes || a.selectedOptionIndexes.length === 0) && !a.textAnswer) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Answer required' });
+    }
   })).min(1),
   timeTaken: z.number().min(0).optional()
 });

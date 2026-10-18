@@ -1,16 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, Clock, Star, BookOpen, Plus } from 'lucide-react';
+import { Search, Clock, Star, BookOpen, Plus, Eye } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
-import Input from '../../components/ui/Input';
 import Select from '../../components/ui/Select';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 import { SkeletonCard } from '../../components/ui/Skeleton';
 import Pagination from '../../components/ui/Pagination';
-import Tabs from '../../components/ui/Tabs';
 import api from '../../lib/api';
 
 export default function Quizzes() {
@@ -20,7 +18,6 @@ export default function Quizzes() {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
   const [difficulty, setDifficulty] = useState('all');
-  const [activeTab, setActiveTab] = useState('all');
   const [loading, setLoading] = useState(true);
 
   const categories = [
@@ -44,15 +41,9 @@ export default function Quizzes() {
     setLoading(true);
     try {
       const params = { page, limit: 12, search: search || undefined, category: category !== 'all' ? category : undefined, difficulty: difficulty !== 'all' ? difficulty : undefined };
-      if (activeTab === 'my') {
-        const res = await api.get('/quizzes/my', { params });
-        setQuizzes(res.data.data.quizzes);
-        setTotal(res.data.data.total);
-      } else {
-        const res = await api.get('/quizzes', { params });
-        setQuizzes(res.data.data.quizzes);
-        setTotal(res.data.data.total);
-      }
+      const res = await api.get('/quizzes', { params });
+      setQuizzes(res.data.data.quizzes);
+      setTotal(res.data.data.total);
     } catch (e) {
       console.error(e);
     } finally {
@@ -60,7 +51,7 @@ export default function Quizzes() {
     }
   };
 
-  useEffect(() => { fetchQuizzes(); }, [page, category, difficulty, activeTab]);
+  useEffect(() => { fetchQuizzes(); }, [page, category, difficulty]);
   useEffect(() => {
     const t = setTimeout(() => { if (page === 1) fetchQuizzes(); else setPage(1); }, 500);
     return () => clearTimeout(t);
@@ -70,10 +61,13 @@ export default function Quizzes() {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="page-title">Quizzes</h1>
-          <p className="text-[14px] text-textSecondary mt-1">Explore and attempt quizzes created by the community.</p>
+          <h1 className="page-title">Explore Quizzes</h1>
+          <p className="text-[14px] text-textSecondary mt-1">Solve published quizzes and earn QCoins. Create your own in My Quizzes.</p>
         </div>
-        <Link to="/quizzes/create"><Button leftIcon={<Plus className="w-4 h-4" />}>Create Quiz</Button></Link>
+        <div className="flex gap-2">
+          <Link to="/my-quizzes"><Button variant="secondary">My Quizzes</Button></Link>
+          <Link to="/quizzes/create"><Button leftIcon={<Plus className="w-4 h-4" />}>Create Quiz</Button></Link>
+        </div>
       </div>
 
       <Card padding={false} className="p-4">
@@ -89,8 +83,6 @@ export default function Quizzes() {
         </div>
       </Card>
 
-      <Tabs tabs={[{ value: 'all', label: 'All Quizzes' }, { value: 'my', label: 'My Quizzes' }]} activeTab={activeTab} onChange={setActiveTab} />
-
       {loading ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">{Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}</div>
       ) : quizzes.length === 0 ? (
@@ -103,10 +95,7 @@ export default function Quizzes() {
                 <Card hover className="h-full flex flex-col">
                   <div className="flex items-start justify-between mb-3">
                     <Badge variant={quiz.difficulty === 'hard' ? 'error' : quiz.difficulty === 'medium' ? 'warning' : 'success'}>{quiz.difficulty}</Badge>
-                    <div className="flex items-center gap-2">
-                      {quiz.status && quiz.status !== 'approved' && <Badge variant={quiz.status === 'pending' ? 'warning' : 'error'}>{quiz.status}</Badge>}
-                      <span className="text-[12px] text-textSecondary flex items-center gap-1"><Clock className="w-3 h-3" />{quiz.timeLimit}m</span>
-                    </div>
+                    <span className="text-[12px] text-textSecondary flex items-center gap-1"><Clock className="w-3 h-3" />{quiz.timeLimit}m</span>
                   </div>
                   <h3 className="font-semibold text-[15px] line-clamp-2 group-hover:text-primary">{quiz.title}</h3>
                   <p className="text-[13px] text-textSecondary mt-2 line-clamp-2 flex-1">{quiz.description}</p>

@@ -88,7 +88,7 @@ export default function Landing() {
           <div className="grid md:grid-cols-3 gap-6">
             {[
               { icon: Trophy, title: 'Competitive Leaderboard', desc: 'Weekly, monthly and all-time rankings with real-time points tracking and podium highlights.' },
-              { icon: Coins, title: 'QCoin Economy', desc: 'Immutable ledger, earn by completing quizzes, spend on premium content, purchase packs.' },
+              { icon: Coins, title: 'QCoin Economy', desc: 'Immutable ledger, earn by completing quizzes, polls and community activity — no purchases, only earn.' },
               { icon: Shield, title: 'Admin Moderation', desc: 'Approval workflows, audit logs, reports, user management and platform settings.' }
             ].map(f => (
               <div key={f.title} className="bg-surface rounded-xl border border-border p-6">

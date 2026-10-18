@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 const answerSchema = new mongoose.Schema({
   question: { type: mongoose.Schema.Types.ObjectId, ref: 'Question', required: true },
   selectedOptionIndexes: [{ type: Number }],
+  textAnswer: { type: String, default: '' },
   isCorrect: { type: Boolean, default: false },
   pointsEarned: { type: Number, default: 0 },
   timeSpent: { type: Number, default: 0 } // seconds

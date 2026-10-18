@@ -74,3 +74,10 @@ export const getMyPolls = async (req, res, next) => {
     res.json({ success: true, data: result });
   } catch (err) { next(err); }
 };
+
+export const getCreatorAnalytics = async (req, res, next) => {
+  try {
+    const analytics = await pollService.getCreatorAnalytics(req.user._id);
+    res.json({ success: true, data: analytics });
+  } catch (err) { next(err); }
+};

@@ -18,15 +18,19 @@ import {
   ScrollText,
   Sliders,
   X,
-  Sparkles
+  Sparkles,
+  Library,
+  Vote
 } from 'lucide-react';
 import Avatar from '../ui/Avatar';
 import useAuthStore from '../../store/authStore';
 
 const userNav = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },
-  { label: 'Quizzes', icon: BookOpen, path: '/quizzes' },
-  { label: 'Polls', icon: BarChart3, path: '/polls' },
+  { label: 'Explore Quizzes', icon: BookOpen, path: '/quizzes' },
+  { label: 'My Quizzes', icon: Library, path: '/my-quizzes' },
+  { label: 'Explore Polls', icon: BarChart3, path: '/polls' },
+  { label: 'My Polls', icon: Vote, path: '/my-polls' },
   { label: 'Leaderboard', icon: Trophy, path: '/leaderboard' },
   { label: 'QCoin Wallet', icon: Coins, path: '/wallet' },
   { label: 'Ratings', icon: MessageSquare, path: '/ratings' },

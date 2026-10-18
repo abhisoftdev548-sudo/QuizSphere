@@ -34,6 +34,20 @@ export const getQuizById = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+export const getQuizForAttempt = async (req, res, next) => {
+  try {
+    const quiz = await quizService.getQuizForAttempt(req.params.id, req.user?._id?.toString(), req.user?.role === 'admin');
+    res.json({ success: true, data: { quiz } });
+  } catch (err) { next(err); }
+};
+
+export const getCreatorAnalytics = async (req, res, next) => {
+  try {
+    const analytics = await quizService.getCreatorAnalytics(req.user._id);
+    res.json({ success: true, data: analytics });
+  } catch (err) { next(err); }
+};
+
 export const updateQuiz = async (req, res, next) => {
   try {
     const quiz = await quizService.updateQuiz(req.params.id, req.user._id, req.body, req.user.role === 'admin');

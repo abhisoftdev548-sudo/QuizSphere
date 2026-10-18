@@ -5,6 +5,24 @@ import User from '../models/User.js';
 import { addQCoinTransaction, calculateQuizReward } from '../utils/qcoin.js';
 import { createNotification } from '../utils/notifications.js';
 
+const sanitizeQuestionsForUser = (questions, isAuthorOrAdmin) => {
+  if (isAuthorOrAdmin) return questions;
+  // For regular users viewing quiz details or attempting, hide correct answers
+  return questions.map(q => {
+    const obj = q.toObject ? q.toObject() : { ...q };
+    if (obj.type === 'fill-blank') {
+      delete obj.correctAnswer;
+    } else {
+      // Remove isCorrect flag, but keep options text
+      if (obj.options) {
+        obj.options = obj.options.map(opt => ({ text: opt.text }));
+      }
+    }
+    delete obj.explanation;
+    return obj;
+  });
+};
+
 export const createQuiz = async (userId, data) => {
   const { questions, ...quizData } = data;
   
@@ -19,7 +37,8 @@ export const createQuiz = async (userId, data) => {
       quiz: quiz._id,
       text: q.text,
       type: q.type || 'multiple-choice',
-      options: q.options,
+      options: q.type === 'fill-blank' ? [] : (q.options || []),
+      correctAnswer: q.correctAnswer || '',
       explanation: q.explanation || '',
       points: q.points || 10,
       order: q.order ?? idx
@@ -81,6 +100,33 @@ export const getQuizById = async (quizId, userId = null, isAdmin = false) => {
     throw Object.assign(new Error('Quiz not available'), { statusCode: 403 });
   }
 
+  const isAuthorOrAdmin = isAdmin || quiz.author._id.toString() === userId;
+  
+  // Sanitize if not author/admin and not in attempt context
+  // For details page, hide answers
+  if (!isAuthorOrAdmin) {
+    quiz.questions = sanitizeQuestionsForUser(quiz.questions, false);
+  }
+
+  return quiz;
+};
+
+export const getQuizForAttempt = async (quizId, userId, isAdmin = false) => {
+  const quiz = await Quiz.findById(quizId)
+    .populate('author', 'username avatar')
+    .populate('questions');
+
+  if (!quiz) throw Object.assign(new Error('Quiz not found'), { statusCode: 404 });
+  if (quiz.status !== 'approved' && !isAdmin && quiz.author._id.toString() !== userId) {
+    throw Object.assign(new Error('Quiz not available'), { statusCode: 403 });
+  }
+
+  const isAuthorOrAdmin = isAdmin || quiz.author._id.toString() === userId;
+  // For attempt, hide correct answers
+  if (!isAuthorOrAdmin) {
+    quiz.questions = sanitizeQuestionsForUser(quiz.questions, false);
+  }
+
   return quiz;
 };
 
@@ -95,7 +141,7 @@ export const updateQuiz = async (quizId, userId, data, isAdmin = false) => {
   const { questions, ...quizData } = data;
 
   Object.assign(quiz, quizData);
-  if (!isAdmin) quiz.status = 'pending'; // re-review after edit
+  if (!isAdmin) quiz.status = 'pending';
   await quiz.save();
 
   if (questions && questions.length > 0) {
@@ -105,7 +151,8 @@ export const updateQuiz = async (quizId, userId, data, isAdmin = false) => {
         quiz: quiz._id,
         text: q.text,
         type: q.type || 'multiple-choice',
-        options: q.options,
+        options: q.type === 'fill-blank' ? [] : (q.options || []),
+        correctAnswer: q.correctAnswer || '',
         explanation: q.explanation || '',
         points: q.points || 10,
         order: q.order ?? idx
@@ -137,7 +184,6 @@ export const reviewQuiz = async (quizId, status, rejectionReason, adminId) => {
   else quiz.rejectionReason = '';
   await quiz.save();
 
-  // Notify author
   if (quiz.author) {
     await createNotification({
       userId: quiz.author._id,
@@ -161,7 +207,6 @@ export const attemptQuiz = async (userId, quizId, answersData, timeTaken) => {
   const user = await User.findById(userId);
   if (!user) throw Object.assign(new Error('User not found'), { statusCode: 404 });
 
-  // Check QCoin cost
   if (quiz.qcoinCost > 0) {
     if (user.qcoins < quiz.qcoinCost) throw Object.assign(new Error('Insufficient QCoins to attempt this quiz'), { statusCode: 400 });
     await addQCoinTransaction({
@@ -182,21 +227,35 @@ export const attemptQuiz = async (userId, quizId, answersData, timeTaken) => {
     totalPoints += q.points;
     const userAnswer = answersData.find(a => a.questionId === q._id.toString());
     if (!userAnswer) {
-      processedAnswers.push({ question: q._id, selectedOptionIndexes: [], isCorrect: false, pointsEarned: 0, timeSpent: 0 });
+      processedAnswers.push({ question: q._id, selectedOptionIndexes: [], textAnswer: '', isCorrect: false, pointsEarned: 0, timeSpent: 0 });
       continue;
     }
 
-    const correctIndexes = q.options.map((opt, idx) => opt.isCorrect ? idx : -1).filter(i => i !== -1);
-    const selected = userAnswer.selectedOptionIndexes || [];
-    
-    // Check if answer is correct (exact match for single, subset for multiple?)
-    const isCorrect = correctIndexes.length === selected.length && correctIndexes.every(ci => selected.includes(ci));
+    let isCorrect = false;
+
+    if (q.type === 'fill-blank') {
+      const correct = (q.correctAnswer || '').trim().toLowerCase();
+      const given = (userAnswer.textAnswer || '').trim().toLowerCase();
+      isCorrect = correct === given && given.length > 0;
+    } else {
+      const correctIndexes = q.options.map((opt, idx) => opt.isCorrect ? idx : -1).filter(i => i !== -1);
+      const selected = userAnswer.selectedOptionIndexes || [];
+      
+      if (q.type === 'single-choice' || q.type === 'true-false') {
+        isCorrect = selected.length === 1 && correctIndexes.includes(selected[0]);
+      } else {
+        // multiple-choice: exact match
+        isCorrect = correctIndexes.length === selected.length && correctIndexes.every(ci => selected.includes(ci));
+      }
+    }
+
     const pointsEarned = isCorrect ? q.points : 0;
     score += pointsEarned;
 
     processedAnswers.push({
       question: q._id,
-      selectedOptionIndexes: selected,
+      selectedOptionIndexes: userAnswer.selectedOptionIndexes || [],
+      textAnswer: userAnswer.textAnswer || '',
       isCorrect,
       pointsEarned,
       timeSpent: userAnswer.timeSpent || 0
@@ -217,12 +276,10 @@ export const attemptQuiz = async (userId, quizId, answersData, timeTaken) => {
     timeTaken: timeTaken || 0
   });
 
-  // Update quiz stats
   const allAttempts = await Attempt.find({ quiz: quizId });
   const avgScore = allAttempts.reduce((sum, a) => sum + a.percentage, 0) / allAttempts.length;
   await Quiz.findByIdAndUpdate(quizId, { totalAttempts: allAttempts.length, avgScore: Math.round(avgScore) });
 
-  // Update user stats & reward
   let qcoinsEarned = 0;
   if (passed) {
     qcoinsEarned = calculateQuizReward(quiz, attempt);
@@ -274,4 +331,31 @@ export const getAttemptById = async (attemptId, userId, isAdmin = false) => {
   if (!attempt) throw Object.assign(new Error('Attempt not found'), { statusCode: 404 });
   if (!isAdmin && attempt.user._id.toString() !== userId && attempt.user.toString() !== userId) throw Object.assign(new Error('Not authorized'), { statusCode: 403 });
   return attempt;
+};
+
+export const getCreatorAnalytics = async (authorId) => {
+  const quizzes = await Quiz.find({ author: authorId }).select('_id title category status totalAttempts avgScore avgRating totalRatings createdAt').lean();
+  
+  const quizIds = quizzes.map(q => q._id);
+  const attempts = await Attempt.find({ quiz: { $in: quizIds } }).lean();
+  
+  const totalAttempts = attempts.length;
+  const avgScore = attempts.length ? Math.round(attempts.reduce((sum, a) => sum + a.percentage, 0) / attempts.length) : 0;
+  const totalQCoinsGiven = attempts.reduce((sum, a) => sum + (a.qcoinsEarned || 0), 0);
+  const passRate = attempts.length ? Math.round((attempts.filter(a => a.passed).length / attempts.length) * 100) : 0;
+
+  const attemptsByDay = await Attempt.aggregate([
+    { $match: { quiz: { $in: quizIds }, createdAt: { $gte: new Date(Date.now() - 7*24*60*60*1000) } } },
+    { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
+    { $sort: { _id: 1 } }
+  ]);
+
+  const topQuizzes = [...quizzes].sort((a, b) => (b.totalAttempts || 0) - (a.totalAttempts || 0)).slice(0, 5);
+
+  return {
+    quizzes,
+    stats: { totalQuizzes: quizzes.length, totalAttempts, avgScore, totalQCoinsGiven, passRate },
+    attemptsByDay,
+    topQuizzes
+  };
 };

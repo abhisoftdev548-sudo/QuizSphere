@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Clock, Star, BookOpen, Trophy, Coins, User, Edit, Trash2, Flag } from 'lucide-react';
+import { Clock, Star, BookOpen, Trophy, Coins, Edit, Trash2, Flag, Lock, EyeOff } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../../components/ui/Card';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import Avatar from '../../components/ui/Avatar';
 import { useToast } from '../../components/ui/Toast';
 import Modal, { ConfirmModal } from '../../components/ui/Modal';
-import Input from '../../components/ui/Input';
 import api from '../../lib/api';
 import useAuthStore from '../../store/authStore';
 
@@ -75,7 +74,6 @@ export default function QuizDetails() {
       await api.post('/ratings', { targetType: 'quiz', targetId: id, rating: ratingVal, review });
       addToast('Rating submitted', 'success');
       setShowRating(false);
-      // refresh
       const res = await api.get(`/ratings?targetType=quiz&targetId=${id}`);
       setRatings(res.data.data.ratings);
       setAvgRating(res.data.data.avgRating);
@@ -87,7 +85,7 @@ export default function QuizDetails() {
   if (loading) return <div className="p-8 text-center">Loading...</div>;
   if (!quiz) return <div className="p-8 text-center">Quiz not found</div>;
 
-  const isAuthor = user?._id === quiz.author?._id || user?.id === quiz.author?._id;
+  const isAuthor = user?._id === quiz.author?._id || user?.id === quiz.author?._id || user?._id === quiz.author;
   const bestAttempt = attempts.length ? Math.max(...attempts.map(a => a.percentage)) : 0;
 
   return (
@@ -126,23 +124,45 @@ export default function QuizDetails() {
               {quiz.tags?.map(tag => <span key={tag} className="px-2.5 py-1 rounded-full bg-appBg text-[12px]">{tag}</span>)}
             </div>
             <div className="mt-6 grid sm:grid-cols-2 gap-4">
-              <div className="flex items-center gap-3 p-3 rounded-xl bg-appBg border border-border"><Trophy className="w-5 h-5 text-primary" /><div><p className="text-[12px] text-textSecondary">Reward</p><p className="font-semibold text-[14px]">{quiz.qcoinReward} QCoins</p></div></div>
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-appBg border border-border"><Trophy className="w-5 h-5 text-primary" /><div><p className="text-[12px] text-textSecondary">Reward</p><p className="font-semibold text-[14px]">{quiz.qcoinReward} QCoins (earn only)</p></div></div>
               <div className="flex items-center gap-3 p-3 rounded-xl bg-appBg border border-border"><BookOpen className="w-5 h-5 text-primary" /><div><p className="text-[12px] text-textSecondary">Attempts</p><p className="font-semibold text-[14px]">{quiz.totalAttempts} total</p></div></div>
             </div>
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Questions Preview</CardTitle><span className="text-[12px] text-textSecondary">{quiz.questions?.length} questions</span></CardHeader>
+            <CardHeader>
+              <CardTitle>Questions Preview {isAuthor ? '(Author View - Answers Visible)' : '(Answers Hidden)'}</CardTitle>
+              <span className="text-[12px] text-textSecondary flex items-center gap-1">{isAuthor ? <EyeOff className="w-3 h-3" /> : <Lock className="w-3 h-3" />} {quiz.questions?.length} questions</span>
+            </CardHeader>
             <div className="space-y-3">
               {quiz.questions?.slice(0, 3).map((q, idx) => (
-                <div key={q._id} className="p-3 rounded-xl border border-border bg-appBg">
-                  <p className="text-[14px] font-medium">{idx + 1}. {q.text}</p>
-                  <div className="mt-2 grid sm:grid-cols-2 gap-2">
-                    {q.options?.map((opt, i) => <div key={i} className={`text-[13px] px-3 py-2 rounded-lg border ${opt.isCorrect ? 'bg-success-light border-success text-success' : 'bg-surface border-border'}`}>{opt.text} {opt.isCorrect && '✓'}</div>)}
+                <div key={q._id || idx} className="p-3 rounded-xl border border-border bg-appBg">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-[14px] font-medium flex-1">{idx + 1}. {q.text}</p>
+                    <Badge variant="default" className="text-[10px]">{q.type}</Badge>
                   </div>
+                  {q.type === 'fill-blank' ? (
+                    <div className="mt-2 p-2 rounded-lg bg-surface border border-border text-[13px]">
+                      {isAuthor ? <span>Answer: <strong>{q.correctAnswer || 'N/A'}</strong></span> : <span className="text-textSecondary flex items-center gap-1"><Lock className="w-3 h-3" /> Fill in the blank - answer hidden until attempt</span>}
+                    </div>
+                  ) : (
+                    <div className="mt-2 grid sm:grid-cols-2 gap-2">
+                      {q.options?.map((opt, i) => {
+                        const text = typeof opt === 'string' ? opt : opt.text;
+                        const isCorrect = opt.isCorrect;
+                        return (
+                          <div key={i} className={`text-[13px] px-3 py-2 rounded-lg border ${isAuthor && isCorrect ? 'bg-success-light border-success text-success' : 'bg-surface border-border'}`}>
+                            {text} {isAuthor && isCorrect && '✓'}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {isAuthor && q.explanation && <p className="mt-2 text-[12px] text-textSecondary">Explanation: {q.explanation}</p>}
                 </div>
               ))}
-              {quiz.questions?.length > 3 && <p className="text-[13px] text-textSecondary text-center">+ {quiz.questions.length - 3} more questions will appear during attempt</p>}
+              {quiz.questions?.length > 3 && <p className="text-[13px] text-textSecondary text-center">+ {quiz.questions.length - 3} more questions will appear during attempt. Answers are hidden for learners.</p>}
+              {!isAuthor && <div className="p-3 rounded-xl bg-primary-light border border-primary/20 text-[13px] text-primary flex gap-2"><Lock className="w-4 h-4 flex-shrink-0 mt-0.5" /><span>As a learner, you cannot see correct answers before attempting. Start the quiz to test your knowledge and earn QCoins!</span></div>}
             </div>
           </Card>
 
@@ -153,7 +173,7 @@ export default function QuizDetails() {
               <div><div className="flex"><Star className="w-4 h-4 fill-warning text-warning" /><Star className="w-4 h-4 fill-warning text-warning" /><Star className="w-4 h-4 fill-warning text-warning" /><Star className="w-4 h-4 fill-warning text-warning" /><Star className="w-4 h-4 text-border" /></div><p className="text-[12px] text-textSecondary mt-1">{ratings.length} reviews</p></div>
             </div>
             <div className="space-y-3">
-              {ratings.length === 0 ? <p className="text-[13px] text-textSecondary">No reviews yet</p> : ratings.slice(0, 5).map(r => (
+              {ratings.length === 0 ? <p className="text-[13px] text-textSecondary">No reviews yet. Be first to rate!</p> : ratings.slice(0, 5).map(r => (
                 <div key={r._id} className="p-3 rounded-xl border border-border">
                   <div className="flex items-center gap-2"><Avatar name={r.user?.username} size="sm" /><span className="text-[13px] font-medium">{r.user?.username}</span><span className="text-[12px] text-warning">★ {r.rating}</span></div>
                   {r.review && <p className="text-[13px] text-textSecondary mt-2">{r.review}</p>}
@@ -194,6 +214,7 @@ export default function QuizDetails() {
               <div className="flex justify-between"><span className="text-textSecondary">Created</span><span>{new Date(quiz.createdAt).toLocaleDateString()}</span></div>
               <div className="flex justify-between"><span className="text-textSecondary">Avg Score</span><span>{Math.round(quiz.avgScore || 0)}%</span></div>
               <div className="flex justify-between"><span className="text-textSecondary">Rating</span><span>{quiz.avgRating?.toFixed(1) || 0} ({quiz.totalRatings || 0})</span></div>
+              <div className="flex justify-between"><span className="text-textSecondary">Type</span><span>Multiple types supported</span></div>
             </div>
           </Card>
         </div>

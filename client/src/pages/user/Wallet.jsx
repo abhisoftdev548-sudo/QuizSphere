@@ -1,32 +1,27 @@
 import React, { useEffect, useState } from 'react';
-import { Coins, TrendingUp, TrendingDown, ShoppingBag, Gift, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { Coins, TrendingUp, Gift, ArrowUpRight, ArrowDownRight, Trophy, BarChart3, Star, Flame, BookOpen, Vote } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../../components/ui/Card';
-import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import Tabs from '../../components/ui/Tabs';
-import Modal from '../../components/ui/Modal';
-import { useToast } from '../../components/ui/Toast';
 import api from '../../lib/api';
 
 export default function Wallet() {
   const [wallet, setWallet] = useState(null);
   const [transactions, setTransactions] = useState([]);
-  const [packages, setPackages] = useState([]);
+  const [earnInfo, setEarnInfo] = useState([]);
   const [filter, setFilter] = useState('all');
-  const [showPurchase, setShowPurchase] = useState(null);
   const [loading, setLoading] = useState(true);
-  const { addToast } = useToast();
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [walletRes, packagesRes] = await Promise.all([
+        const [walletRes, earnRes] = await Promise.all([
           api.get('/qcoins/wallet'),
-          api.get('/qcoins/packages')
+          api.get('/qcoins/earn-info')
         ]);
         setWallet(walletRes.data.data);
         setTransactions(walletRes.data.data.transactions);
-        setPackages(packagesRes.data.data.packages);
+        setEarnInfo(earnRes.data.data.earnMethods);
       } catch (e) {
         console.error(e);
       } finally {
@@ -36,21 +31,15 @@ export default function Wallet() {
     fetchData();
   }, []);
 
-  const handlePurchase = async (pkg) => {
-    try {
-      const amount = pkg.qcoins + (pkg.bonus || 0);
-      await api.post('/qcoins/purchase', { amount, packageId: pkg.id });
-      addToast(`Purchased ${amount} QCoins!`, 'success');
-      setShowPurchase(null);
-      const res = await api.get('/qcoins/wallet');
-      setWallet(res.data.data);
-      setTransactions(res.data.data.transactions);
-    } catch (e) {
-      addToast(e.response?.data?.message || 'Purchase failed', 'error');
-    }
-  };
-
   const filteredTx = filter === 'all' ? transactions : transactions.filter(t => t.type === filter);
+
+  const iconMap = {
+    trophy: Trophy,
+    star: Star,
+    flame: Flame,
+    book: BookOpen,
+    vote: Vote
+  };
 
   if (loading) return <div className="p-8 text-center">Loading wallet...</div>;
 
@@ -58,7 +47,7 @@ export default function Wallet() {
     <div className="space-y-6 max-w-5xl mx-auto">
       <div>
         <h1 className="page-title">QCoin Wallet</h1>
-        <p className="text-[14px] text-textSecondary mt-1">Manage your QCoins, view transactions and purchase more.</p>
+        <p className="text-[14px] text-textSecondary mt-1">QCoins can only be earned by creating and participating — no purchases.</p>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
@@ -67,7 +56,7 @@ export default function Wallet() {
             <div>
               <p className="text-white/70 text-[13px] uppercase tracking-wide">Total Balance</p>
               <p className="text-[36px] font-bold mt-2 flex items-center gap-3"><Coins className="w-8 h-8" />{wallet?.user?.qcoins || 0}</p>
-              <p className="text-white/70 text-[13px] mt-1">QCoins • 1 QCoin = $0.01</p>
+              <p className="text-white/70 text-[13px] mt-1">Earned QCoins • Cannot be purchased</p>
             </div>
             <div className="bg-white/10 backdrop-blur rounded-xl p-3">
               <p className="text-[12px] text-white/70">Total Points</p>
@@ -86,40 +75,51 @@ export default function Wallet() {
         </Card>
 
         <Card>
-          <CardTitle className="mb-4">Quick Actions</CardTitle>
+          <CardTitle className="mb-4">How to Earn</CardTitle>
           <div className="space-y-3">
-            <Button fullWidth leftIcon={<ShoppingBag className="w-4 h-4" />} onClick={() => document.getElementById('packages')?.scrollIntoView()}>Buy QCoins</Button>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="p-3 rounded-xl bg-appBg border border-border text-center"><Gift className="w-5 h-5 mx-auto text-success" /><p className="text-[12px] font-medium mt-2">Earn by quizzes</p><p className="text-[11px] text-textSecondary">+10 per completion</p></div>
-              <div className="p-3 rounded-xl bg-appBg border border-border text-center"><TrendingUp className="w-5 h-5 mx-auto text-primary" /><p className="text-[12px] font-medium mt-2">Leaderboard bonus</p><p className="text-[11px] text-textSecondary">Top 10 weekly</p></div>
+            <div className="p-3 rounded-xl bg-success-light border border-success/20">
+              <p className="text-[13px] font-medium text-success">No Purchase Needed</p>
+              <p className="text-[12px] text-textSecondary mt-1">QCoins are earned only by quizzes, polls and community activity.</p>
+            </div>
+            <div className="space-y-2">
+              {earnInfo.slice(0, 3).map(m => {
+                const Icon = iconMap[m.icon] || Trophy;
+                return (
+                  <div key={m.id} className="flex items-center gap-3 p-2 rounded-lg bg-appBg border border-border">
+                    <div className="w-8 h-8 rounded-lg bg-primary-light flex items-center justify-center"><Icon className="w-4 h-4 text-primary" /></div>
+                    <div className="flex-1"><p className="text-[12px] font-medium">{m.title}</p><p className="text-[11px] text-textSecondary">{m.qcoins} QCoins</p></div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </Card>
       </div>
 
-      <div id="packages">
-        <h2 className="section-title mb-4">QCoin Packages</h2>
-        <div className="grid md:grid-cols-4 gap-4">
-          {packages.map(pkg => (
-            <Card key={pkg.id} className={`relative ${pkg.popular ? 'border-primary ring-1 ring-primary' : ''}`}>
-              {pkg.popular && <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary text-white text-[11px] font-bold px-3 py-1 rounded-full">POPULAR</div>}
-              <h3 className="font-semibold">{pkg.name}</h3>
-              <p className="text-[28px] font-bold mt-2">{pkg.qcoins + (pkg.bonus || 0)} <span className="text-[14px] font-normal text-textSecondary">QCoins</span></p>
-              {pkg.bonus > 0 && <p className="text-[12px] text-success">+{pkg.bonus} bonus!</p>}
-              <p className="text-[18px] font-bold mt-3">${pkg.price}</p>
-              <Button fullWidth className="mt-4" variant={pkg.popular ? 'primary' : 'secondary'} onClick={() => setShowPurchase(pkg)}>Purchase</Button>
-            </Card>
-          ))}
+      <div>
+        <h2 className="section-title mb-4">Ways to Earn QCoins</h2>
+        <div className="grid md:grid-cols-3 lg:grid-cols-5 gap-4">
+          {earnInfo.map(method => {
+            const Icon = iconMap[method.icon] || Trophy;
+            return (
+              <Card key={method.id} className="text-center">
+                <div className="w-10 h-10 mx-auto rounded-xl bg-primary-light flex items-center justify-center mb-3"><Icon className="w-5 h-5 text-primary" /></div>
+                <h3 className="font-semibold text-[13px]">{method.title}</h3>
+                <p className="text-[11px] text-textSecondary mt-1 line-clamp-2">{method.description}</p>
+                <Badge variant="success" className="mt-3">{method.qcoins}</Badge>
+              </Card>
+            );
+          })}
         </div>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Transaction History</CardTitle>
-          <Tabs tabs={[{ value: 'all', label: 'All' }, { value: 'earn', label: 'Earn' }, { value: 'spend', label: 'Spend' }, { value: 'purchase', label: 'Purchase' }]} activeTab={filter} onChange={setFilter} />
+          <Tabs tabs={[{ value: 'all', label: 'All' }, { value: 'earn', label: 'Earned' }, { value: 'spend', label: 'Spent' }, { value: 'bonus', label: 'Bonus' }]} activeTab={filter} onChange={setFilter} />
         </CardHeader>
         <div className="space-y-2">
-          {filteredTx.length === 0 ? <p className="text-[13px] text-textSecondary text-center py-8">No transactions</p> : filteredTx.map(tx => (
+          {filteredTx.length === 0 ? <p className="text-[13px] text-textSecondary text-center py-8">No transactions yet. Complete a quiz to earn QCoins!</p> : filteredTx.map(tx => (
             <div key={tx._id} className="flex items-center gap-3 p-3 rounded-xl border border-border hover:bg-appBg">
               <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${tx.amount > 0 ? 'bg-success-light text-success' : 'bg-error-light text-error'}`}>
                 {tx.amount > 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
@@ -133,17 +133,6 @@ export default function Wallet() {
           ))}
         </div>
       </Card>
-
-      <Modal isOpen={!!showPurchase} onClose={() => setShowPurchase(null)} title="Confirm Purchase" footer={<><Button variant="secondary" onClick={() => setShowPurchase(null)}>Cancel</Button><Button onClick={() => handlePurchase(showPurchase)}>Confirm — ${showPurchase?.price}</Button></>}>
-        {showPurchase && (
-          <div className="text-center py-4">
-            <div className="w-16 h-16 mx-auto rounded-2xl bg-primary-light flex items-center justify-center mb-4"><Coins className="w-8 h-8 text-primary" /></div>
-            <h3 className="font-semibold text-[18px]">{showPurchase.name}</h3>
-            <p className="text-[14px] text-textSecondary mt-1">You will receive {showPurchase.qcoins + (showPurchase.bonus || 0)} QCoins for ${showPurchase.price}</p>
-            <p className="text-[12px] text-textSecondary mt-4">This is a simulated purchase. In production, this would integrate with Stripe/PayPal.</p>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }

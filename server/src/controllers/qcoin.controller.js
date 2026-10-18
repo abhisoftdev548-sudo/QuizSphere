@@ -31,31 +31,13 @@ export const getTransactions = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-export const purchaseQCoins = async (req, res, next) => {
-  try {
-    const { amount } = req.body;
-    if (!amount || amount < 10) return res.status(400).json({ success: false, message: 'Minimum purchase is 10 QCoins' });
-
-    // In real app, integrate payment gateway. Here simulate purchase.
-    const { user, transaction } = await addQCoinTransaction({
-      userId: req.user._id,
-      type: 'purchase',
-      amount,
-      description: `Purchased ${amount} QCoins`,
-      relatedType: 'purchase',
-      metadata: { packageId: req.body.packageId || 'custom' }
-    });
-
-    res.json({ success: true, message: `Successfully purchased ${amount} QCoins`, data: { user: { qcoins: user.qcoins }, transaction } });
-  } catch (err) { next(err); }
-};
-
-export const getPackages = async (req, res) => {
-  const packages = [
-    { id: 'starter', name: 'Starter Pack', qcoins: 100, price: 0.99, bonus: 0, popular: false },
-    { id: 'pro', name: 'Pro Pack', qcoins: 500, price: 4.49, bonus: 50, popular: true },
-    { id: 'elite', name: 'Elite Pack', qcoins: 1200, price: 9.99, bonus: 200, popular: false },
-    { id: 'ultimate', name: 'Ultimate Pack', qcoins: 3000, price: 19.99, bonus: 700, popular: false }
+export const getEarnInfo = async (req, res) => {
+  const earnMethods = [
+    { id: 'quiz_complete', title: 'Complete Quizzes', description: 'Earn 10-30 QCoins per quiz based on difficulty and score', qcoins: '10-30', icon: 'trophy' },
+    { id: 'high_score', title: 'High Score Bonus', description: 'Score 90%+ to get 50% extra QCoins', qcoins: '+50%', icon: 'star' },
+    { id: 'daily_streak', title: 'Daily Streak', description: 'Complete 1 quiz daily for 7 days', qcoins: '50 bonus', icon: 'flame' },
+    { id: 'create_quiz', title: 'Create Popular Quiz', description: 'Get 100 QCoins when your quiz reaches 50 attempts', qcoins: '100', icon: 'book' },
+    { id: 'poll_vote', title: 'Vote on Polls', description: 'Earn 2 QCoins per poll vote', qcoins: '2', icon: 'vote' },
   ];
-  res.json({ success: true, data: { packages } });
+  res.json({ success: true, data: { earnMethods } });
 };

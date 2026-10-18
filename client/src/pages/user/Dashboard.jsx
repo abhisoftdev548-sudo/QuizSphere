@@ -166,7 +166,7 @@ export default function Dashboard() {
           {[
             { label: 'Create Quiz', desc: 'Build a new quiz', icon: BookOpen, to: '/quizzes/create' },
             { label: 'Create Poll', desc: 'Ask your audience', icon: BarChart3, to: '/polls/create' },
-            { label: 'Buy QCoins', desc: 'Top up balance', icon: Coins, to: '/wallet' },
+            { label: 'Earn QCoins', desc: 'Complete quizzes & polls', icon: Coins, to: '/wallet' },
             { label: 'View Leaderboard', desc: 'See rankings', icon: Users, to: '/leaderboard' }
           ].map(action => (
             <Link key={action.label} to={action.to} className="p-4 rounded-xl border border-border hover:border-primary hover:bg-primary-light/50 transition-all group">

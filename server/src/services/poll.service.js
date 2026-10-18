@@ -2,6 +2,7 @@ import Poll from '../models/Poll.js';
 import Vote from '../models/Vote.js';
 import User from '../models/User.js';
 import { createNotification } from '../utils/notifications.js';
+import { addQCoinTransaction } from '../utils/qcoin.js';
 
 export const createPoll = async (userId, data) => {
   const options = data.options.map(o => ({ text: o.text, votes: 0 }));
@@ -67,7 +68,6 @@ export const updatePoll = async (pollId, userId, data, isAdmin = false) => {
   if (!isAdmin && poll.author.toString() !== userId) throw Object.assign(new Error('Not authorized'), { statusCode: 403 });
 
   if (data.options) {
-    // Preserve votes if options unchanged? For simplicity reset votes if options changed
     const existingVotes = poll.totalVotes;
     if (existingVotes > 0 && !isAdmin) throw Object.assign(new Error('Cannot edit poll after votes have been cast'), { statusCode: 400 });
     poll.options = data.options.map(o => ({ text: o.text, votes: 0 }));
@@ -112,12 +112,10 @@ export const votePoll = async (userId, pollId, optionIndexes) => {
 
   if (!poll.isMultipleChoice && optionIndexes.length > 1) throw Object.assign(new Error('This poll allows only one choice'), { statusCode: 400 });
 
-  // Validate indexes
   for (const idx of optionIndexes) {
     if (idx < 0 || idx >= poll.options.length) throw Object.assign(new Error('Invalid option index'), { statusCode: 400 });
   }
 
-  // Update vote counts
   for (const idx of optionIndexes) {
     poll.options[idx].votes += 1;
   }
@@ -131,7 +129,20 @@ export const votePoll = async (userId, pollId, optionIndexes) => {
     optionIds: optionIndexes.map(i => poll.options[i]._id)
   });
 
-  // Notify author
+  try {
+    await addQCoinTransaction({
+      userId,
+      type: 'earn',
+      amount: 2,
+      description: `Earned 2 QCoins for voting on poll: ${poll.question.substring(0, 50)}`,
+      relatedId: poll._id,
+      relatedType: 'poll'
+    });
+    await User.findByIdAndUpdate(userId, { $inc: { points: 2 } });
+  } catch (e) {
+    console.error('QCoin reward error', e.message);
+  }
+
   if (poll.author.toString() !== userId) {
     await createNotification({
       userId: poll.author,
@@ -169,4 +180,13 @@ export const reviewPoll = async (pollId, status, rejectionReason, adminId) => {
   }
 
   return poll;
+};
+
+export const getCreatorAnalytics = async (authorId) => {
+  const polls = await Poll.find({ author: authorId }).select('_id question category status totalVotes createdAt').lean();
+  const pollIds = polls.map(p => p._id);
+  const votes = await Vote.find({ poll: { $in: pollIds } }).lean();
+  const totalVotes = votes.length;
+  const topPolls = [...polls].sort((a, b) => (b.totalVotes || 0) - (a.totalVotes || 0)).slice(0, 5);
+  return { polls, stats: { totalPolls: polls.length, totalVotes }, topPolls };
 };

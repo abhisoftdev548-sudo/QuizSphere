@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, Clock, Plus, Vote } from 'lucide-react';
+import { Clock, Plus, Vote } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
@@ -38,7 +38,7 @@ export default function Polls() {
   const handleVote = async (pollId, optionIndexes) => {
     try {
       await api.post(`/polls/${pollId}/vote`, { optionIndexes });
-      addToast('Vote recorded!', 'success');
+      addToast('Vote recorded! +2 QCoins', 'success');
       fetchPolls();
     } catch (e) {
       addToast(e.response?.data?.message || 'Vote failed', 'error');
@@ -49,15 +49,18 @@ export default function Polls() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="page-title">Polls</h1>
-          <p className="text-[14px] text-textSecondary mt-1">Vote and share your opinion with the community.</p>
+          <h1 className="page-title">Explore Polls</h1>
+          <p className="text-[14px] text-textSecondary mt-1">Vote and earn QCoins. Create your own polls in My Polls.</p>
         </div>
-        <Link to="/polls/create"><Button leftIcon={<Plus className="w-4 h-4" />}>Create Poll</Button></Link>
+        <div className="flex gap-2">
+          <Link to="/my-polls"><Button variant="secondary">My Polls</Button></Link>
+          <Link to="/polls/create"><Button leftIcon={<Plus className="w-4 h-4" />}>Create Poll</Button></Link>
+        </div>
       </div>
 
       <Card padding={false} className="p-4 flex gap-3">
         <Select options={[{ value: 'all', label: 'All Categories' }, { value: 'General', label: 'General' }, { value: 'Technology', label: 'Technology' }, { value: 'Sports', label: 'Sports' }]} value={category} onChange={setCategory} containerClassName="w-[200px]" />
-        <div className="text-[13px] text-textSecondary flex items-center">{total} polls found</div>
+        <div className="text-[13px] text-textSecondary flex items-center">{total} polls found • +2 QCoins per vote</div>
       </Card>
 
       {loading ? (
@@ -92,7 +95,7 @@ export default function Polls() {
                   </div>
                   <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
                     <div className="flex items-center gap-2"><Avatar name={poll.author?.username} size="sm" /><span className="text-[12px] text-textSecondary">{poll.author?.username}</span></div>
-                    <span className="text-[12px] text-textSecondary flex items-center gap-1"><Vote className="w-3 h-3" />{poll.totalVotes} votes</span>
+                    <span className="text-[12px] text-textSecondary flex items-center gap-1"><Vote className="w-3 h-3" />{poll.totalVotes} votes • +2 QCoins</span>
                   </div>
                 </Card>
               );

@@ -1,5 +1,5 @@
 import express from 'express';
-import { createQuiz, getQuizzes, getQuizById, updateQuiz, deleteQuiz, reviewQuiz, attemptQuiz, getAttempts, getAttemptById, getMyQuizzes } from '../controllers/quiz.controller.js';
+import { createQuiz, getQuizzes, getQuizById, getQuizForAttempt, updateQuiz, deleteQuiz, reviewQuiz, attemptQuiz, getAttempts, getAttemptById, getMyQuizzes, getCreatorAnalytics } from '../controllers/quiz.controller.js';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { createQuizSchema, updateQuizSchema, reviewQuizSchema, attemptQuizSchema } from '../validators/quiz.validator.js';
@@ -9,9 +9,11 @@ const router = express.Router();
 
 router.get('/', optionalAuth, getQuizzes);
 router.get('/my', authenticate, getMyQuizzes);
+router.get('/analytics', authenticate, getCreatorAnalytics);
 router.get('/attempts', authenticate, getAttempts);
 router.get('/attempts/:attemptId', authenticate, getAttemptById);
 router.get('/:id', optionalAuth, getQuizById);
+router.get('/:id/attempt-data', authenticate, getQuizForAttempt);
 
 router.post('/', authenticate, createLimiter, validate(createQuizSchema), createQuiz);
 router.put('/:id', authenticate, validate(updateQuizSchema), updateQuiz);
