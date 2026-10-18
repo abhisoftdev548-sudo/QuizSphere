@@ -11,14 +11,15 @@ QuizSphere is a complete, functional full-stack quiz & poll platform built with 
 ## Features
 
 - **Auth**: Register/Login, JWT httpOnly cookies, role-based (user/admin)
-- **Quizzes**: Create, edit, pending → admin approval, attempt with timer, scoring, QCoin rewards, results review
-- **Polls**: Create, vote (single/multiple), approval workflow
-- **Leaderboard**: Weekly/monthly/all-time, podium for top 3, current user highlight
-- **QCoins**: Immutable transaction ledger, earn/spend/purchase, wallet + history, packages
-- **Ratings**: Rate quizzes/polls, reviews
-- **Notifications**: Real-time bell with unread badge
+- **Quizzes**: 4 types — multiple-choice (multiple correct), single-choice, true/false, fill-in-the-blank. Create, edit, pending → admin approval, attempt with timer, scoring (case-insensitive for fill-blank), QCoin rewards (earn-only), results review. Answers hidden in preview for learners, visible for author/admin.
+- **Separate Flows**: Explore published quizzes (`/quizzes`) vs My Quizzes (`/my-quizzes`) with creator analytics (total attempts, avg score, QCoins given, 7-day chart, top quizzes). Same for polls (`/polls` vs `/my-polls`).
+- **Polls**: Create, vote (single/multiple), approval workflow, +2 QCoins per vote (earn-only)
+- **Leaderboard**: Weekly/monthly/all-time, podium for top 3, current user highlighted in light purple
+- **QCoins**: Immutable transaction ledger, **earn-only** — no purchase/payment. Earn via quiz completion (10-30 based on difficulty + bonus), high-score bonus, poll votes. Wallet shows balance, stats, earn methods, history.
+- **Ratings**: Rate quizzes/polls, reviews, avg rating aggregation
+- **Notifications**: Real-time bell with unread badge (in-app only, no email)
 - **Reports**: Report content, admin moderation queue
-- **Admin**: Dashboard stats, approvals table (member, content, date, status, score, review action), user management, reports, audit logs, platform settings
+- **Admin**: Dashboard stats, approvals table (member, content, date, status, score, review action), user management, reports, audit logs, platform settings — can manage all, proper rating and QCoin distribution
 - **UI**: Persistent sidebar (260px), topbar with search/bell/profile, empty states, skeletons, toasts, modals (confirm/form/info/danger)
 
 ## Project Structure
@@ -28,7 +29,7 @@ QuizSphere is a complete, functional full-stack quiz & poll platform built with 
   /src/components/ui - Button, Input, Select, Card, Badge, Table, Tabs, Pagination, Avatar, EmptyState, Skeleton, Modal, Toast
   /src/components/layout - Sidebar, Topbar, Layout
   /src/pages/auth - Landing, Login, Register
-  /src/pages/user - Dashboard, Quizzes, QuizDetails, QuizCreate, QuizAttempt, QuizResults, Polls, PollCreate, PollDetails, Leaderboard, Wallet, Ratings, Notifications, Profile, Settings
+  /src/pages/user - Dashboard, Quizzes (explore), MyQuizzes (with analytics), QuizDetails (answers hidden for learners), QuizCreate (4 types), QuizAttempt (supports fill-blank), QuizResults, Polls (explore), MyPolls (analytics), PollCreate, PollDetails, Leaderboard, Wallet (earn-only), Ratings, Notifications, Profile, Settings (no email option)
   /src/pages/admin - Dashboard, Approvals, Users, Reports, AuditLogs, PlatformSettings
   /src/lib/api - Axios instance
   /src/store/authStore - Zustand auth
