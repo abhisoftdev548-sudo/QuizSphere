@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+client/dist/
+server/dist/
+coverage/
+*.tsbuildinfo
+client/vite.config.js
+client/vite.config.d.ts
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Logs and runtime data
+*.log
+npm-debug.log*
+.DS_Store
+.vite/

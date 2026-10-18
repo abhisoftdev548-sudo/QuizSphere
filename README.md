@@ -1,1 +1,135 @@
 # QuizSphere
+
+QuizSphere is a full-stack community platform for creating and participating in quizzes and polls. The repository contains a React/Vite client and an Express/Mongoose API. The implementation uses live API/database responses and renders explicit empty, loading, and error states rather than seeding production-style sample content.
+
+## Current implementation
+
+- Responsive React workspace with a collapsible desktop sidebar, mobile drawer, top bar, protected routes, and role-gated admin areas.
+- Landing, sign-in, registration, unified Explore, quiz/poll details, Creator Studio, quiz/poll editors, attempts, leaderboard, wallet, notifications, profile, settings, and admin screens.
+- Express REST API under `/api/v1`, Zod validation, centralized errors, rate limits, Helmet, CORS allowlist, CSRF double-submit checks, bcrypt password hashes, short-lived access cookies, rotating refresh sessions, and session revocation.
+- Mongoose schemas for users, refresh sessions, categories, platform rules, quiz versions/questions, polls/options, attempts, votes, ledger entries, prize-pool projections, reviews, notifications, ratings, reports, and audit records.
+- Server-calculated quiz scoring, timer enforcement, private answer payloads, vote uniqueness, result-visibility checks, QCoin ledger entries, and admin-configurable creation and participation limits.
+- Signup bonus is credited by an idempotent ledger transaction (100 QCoins by default). MongoDB transactions are required for multi-document economy and moderation operations.
+- Optional password-reset email delivery via SMTP. In development without SMTP, a reset URL is returned only for an existing active account so the local reset flow can be exercised.
+- Unit tests cover scoring and content validation.
+
+### Not yet complete
+
+This is an incremental implementation, not a claim that every item in the supplied product brief is finished. In particular, automatic tie-aware quiz prize settlement, poll reward funding/settlement, full refund/reconciliation workflows, upload/Cloudinary support, email verification, community-rating/report moderation screens, and some extended admin audit/user-inspection workflows still need implementation and end-to-end verification. Prize-pool models are present, but their payout lifecycle is not complete. Do not configure paid prizes for production until those settlement workflows are finished and tested.
+
+## Requirements
+
+- Node.js 20+ and npm 10+
+- MongoDB Atlas or a MongoDB replica set (transactions must be enabled)
+- Optional SMTP credentials for password-reset email delivery
+
+## Local setup
+
+```bash
+npm install
+cp server/.env.example server/.env
+cp client/.env.example client/.env
+```
+
+Set `MONGODB_URI` in `server/.env` to an Atlas connection string or a local replica-set connection string. A standalone local MongoDB server does not support the transactions used for registration bonuses, wallet operations, quiz attempts, voting, and moderation.
+
+Start both apps from the repository root:
+
+```bash
+npm run dev
+```
+
+- Vite client: <http://localhost:5173>
+- API: <http://localhost:4000/api/v1/health>
+
+Vite proxies `/api` to `http://127.0.0.1:4000` by default. Set `VITE_API_PROXY_TARGET` if your local API runs elsewhere. In deployment, the browser uses relative `/api/v1` paths; configure the hosting/reverse proxy to forward them to the API.
+
+### First administrator
+
+1. Register a normal account through the application.
+2. With trusted operator access to the configured database, run:
+
+   ```bash
+   npm run admin:promote -- your-account@example.com
+   ```
+
+3. Sign out and sign in again so the role in the new session reflects the administrator role.
+
+Registration never accepts a client-provided role. The promotion script writes an audit event and must only be run by an operator with database access.
+
+## Environment variables
+
+### Server (`server/.env`)
+
+| Variable | Purpose |
+| --- | --- |
+| `NODE_ENV` | `development`, `test`, or `production` |
+| `PORT` | API listen port (default `4000`) |
+| `MONGODB_URI` | MongoDB connection string |
+| `CLIENT_ORIGIN` | Comma-separated allowed browser origins |
+| `ACCESS_TOKEN_SECRET` | Random secret, at least 32 characters |
+| `REFRESH_TOKEN_SECRET` | Different random secret, at least 32 characters |
+| `ACCESS_TOKEN_TTL` | Access JWT lifetime (default `15m`) |
+| `REFRESH_TOKEN_TTL_DAYS` | Refresh session lifetime (default `30`) |
+| `SIGNUP_BONUS_QCOINS` | Initial signup bonus (default `100`; can later be changed by admins) |
+| `COOKIE_SECURE` | Set `true` in HTTPS production |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Optional password-reset mail transport |
+
+Generate independent strong token secrets for each deployment. Never put secrets in `client/.env` or a `VITE_*` variable. The client only needs `VITE_API_PROXY_TARGET` for local development.
+
+## API overview
+
+All endpoints return `{ "success": true, "data": ... }` on success and `{ "success": false, "error": { "code", "message" } }` on failure.
+
+- `POST /api/v1/auth/register|login|logout|refresh|forgot-password|reset-password`, `GET /api/v1/auth/me`
+- `GET /api/v1/platform/rules`
+- `GET /api/v1/explore` with `type`, `search`, `categoryId`, `difficulty`, `sort`, `page`, `limit`; `GET /categories`, `/quizzes/:id`, `/polls/:id`
+- `GET /api/v1/users/me/overview|attempts|notifications|wallet|wallet/transactions`; profile and notification read endpoints use `PATCH`
+- `/api/v1/creator` for drafts, submissions, creator analytics, and publishing approved content
+- `/api/v1/participation` for quiz attempt creation, answer saves, submission, and result retrieval
+- `/api/v1/polls/:id/vote` and `/api/v1/polls/me/poll-votes`
+- `GET /api/v1/leaderboards?type=performance|consistency|creators&period=week|month|all`
+- `/api/v1/admin` for overview, reviews, users, configuration, categories, ledger, adjustments, settlements, and audit logs
+
+Creation and participation requests that can move QCoins require an `Idempotency-Key`. Quiz creation fees require the explicit `X-Confirm-QCoin-Fee: true` header after the API returns the current fee breakdown. Prices and eligibility are checked on the server.
+
+## Business and security notes
+
+- The server is authoritative for roles, balances, prices, quiz answers, scores, vote eligibility, and review decisions.
+- Public quiz details do not include questions or answer keys. Questions are returned only after a valid attempt starts; scores are calculated on the server.
+- Anonymous poll responses contain no voter identity. Public result payloads follow each poll's visibility setting.
+- QCoins are virtual, non-cash, non-transferable platform credits. Every balance adjustment is recorded as a ledger entry; historical ledger rows are not edited.
+- The initial free quiz question limit is 10. Pricing and limits are stored in `PlatformConfig` and can be changed in the admin workspace. A change affects new creation/participation actions; already committed ledger entries remain unchanged, and published content keeps its disclosed terms.
+- MongoDB multi-document transactions require Atlas or a replica set. Do not bypass transaction errors in production.
+- Production should use HTTPS, `COOKIE_SECURE=true`, a narrow `CLIENT_ORIGIN` allowlist, rotated secrets, restricted Atlas network access, and SMTP credentials stored in the hosting provider's secret manager.
+
+## Tests and builds
+
+```bash
+npm run typecheck
+npm run test --workspace server
+npm run build
+```
+
+Tests currently cover deterministic score calculation, exact multiple-choice matching, unanswered questions, quiz answer-key validation, and poll option/date validation. A MongoDB-backed integration test suite and complete settlement concurrency tests remain to be added.
+
+## Deployment outline
+
+### Render (API)
+
+- Create a Node web service with repository root as the working directory.
+- Build command: `npm install && npm run build --workspace server`
+- Start command: `npm run start --workspace server`
+- Configure the server environment variables above. Set `NODE_ENV=production`, `COOKIE_SECURE=true`, `MONGODB_URI`, both token secrets, `CLIENT_ORIGIN`, and SMTP values if email is enabled.
+- Use a MongoDB Atlas replica set. Confirm `/api/v1/health` reports `database: connected`.
+
+### Vercel (client)
+
+- Build command from the repository root: `npm install && npm run build --workspace client`
+- Output directory: `client/dist`
+- Add a rewrite so client-side routes serve `index.html`.
+- Route `/api/*` to the Render API, or configure an equivalent same-origin proxy. If using a separate API origin, set `CLIENT_ORIGIN` to the exact client origin and verify cookie/CORS behavior in production.
+
+### MongoDB Atlas
+
+Create a database user with least-privilege access, restrict network access to the deployment environment where possible, and use a replica-set/Atlas connection string so transactional operations work.
