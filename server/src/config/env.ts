@@ -10,7 +10,10 @@ const envSchema = z.object({
   REFRESH_TOKEN_SECRET: z.string().min(32).default('local-only-refresh-secret-change-me-123456'),
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
-  COOKIE_SAME_SITE: z.enum(['strict', 'lax', 'none']).default('lax'),
+  COOKIE_SAME_SITE: z.preprocess(
+    (value) => typeof value === 'string' ? value.trim().toLowerCase() : value,
+    z.enum(['strict', 'lax', 'none']),
+  ).default(process.env.NODE_ENV === 'production' ? 'none' : 'lax'),
   COOKIE_DOMAIN: z.string().optional(),
   SIGNUP_BONUS_QCOINS: z.coerce.number().int().nonnegative().default(100),
   COOKIE_SECURE: z.string().optional().transform((value) => value === 'true'),

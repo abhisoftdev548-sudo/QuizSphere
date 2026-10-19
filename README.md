@@ -73,7 +73,7 @@ Registration never accepts a client-provided role. The promotion script writes a
 | `REFRESH_TOKEN_SECRET` | Different random secret, at least 32 characters |
 | `ACCESS_TOKEN_TTL` | Access JWT lifetime (default `15m`) |
 | `REFRESH_TOKEN_TTL_DAYS` | Refresh session lifetime (default `30`) |
-| `COOKIE_SAME_SITE` | `lax` by default; use `none` for a cross-site frontend/API deployment (HTTPS required) |
+| `COOKIE_SAME_SITE` | `lax` by default in development and `none` in production; override with `lax`, `strict`, or `none` (`none` requires HTTPS and automatically enables Secure cookies) |
 | `COOKIE_DOMAIN` | Optional shared cookie domain when client and API use sibling subdomains |
 | `SIGNUP_BONUS_QCOINS` | Initial signup bonus (default `100`; can later be changed by admins) |
 | `COOKIE_SECURE` | Set `true` in HTTPS production |
@@ -134,7 +134,7 @@ Tests cover deterministic score calculation and rank payouts, General/Special Ev
 - Output directory: `client/dist`
 - Add a rewrite so client-side routes serve `index.html`.
 - Route `/api/*` to the Render API, or configure an equivalent same-origin proxy. If using a separate API origin, set `CLIENT_ORIGIN` to the exact client origin and verify cookie/CORS behavior in production.
-- For a separate API origin, set the Vercel `VITE_API_BASE_URL` to the full API URL ending in `/api/v1`; on the API set `CLIENT_ORIGIN` to the exact website origin, `COOKIE_SAME_SITE=none`, and `COOKIE_SECURE=true`. Cookies require HTTPS and third-party-cookie blocking can prevent cross-site sessions, so a same-origin `/api` proxy is the most reliable deployment.
+- For a separate API origin, set the Vercel `VITE_API_BASE_URL` to the full API URL ending in `/api/v1`; on the API set `CLIENT_ORIGIN` to the exact website origin and `COOKIE_SAME_SITE=none` (the production default; this automatically enables Secure cookies). Cookies require HTTPS and third-party-cookie blocking can prevent cross-site sessions, so a same-origin `/api` proxy is the most reliable deployment.
 
 ### MongoDB Atlas
 
