@@ -132,7 +132,7 @@ Tests cover deterministic score calculation and rank payouts, General/Special Ev
 
 - Build command from the repository root: `npm install && npm run build --workspace client`
 - Output directory: `client/dist`
-- The repository `vercel.json` proxies `/api/*` to the Render API and sends client-side routes to `index.html`, keeping auth cookies same-origin with the website.
+- Set Vercel Root Directory to `client` and enable including files outside the root directory if using the npm workspace install/build commands. `client/vercel.json` proxies `/api/*` to Render and sends client-side routes to `index.html`; it is kept inside `client` so Vercel loads it when that folder is the project root. The root `vercel.json` provides the equivalent routing when the Vercel Root Directory is the repository root.
 - Do not set `VITE_API_BASE_URL` in Vercel when using this proxy; the client should use its default relative `/api/v1` URL.
 - On the API, set `CLIENT_ORIGIN` to the exact website origin. Leave `COOKIE_DOMAIN` unset so the proxied API cookies are scoped to the website host. Production defaults to `COOKIE_SAME_SITE=none` and automatically enables Secure cookies.
 
