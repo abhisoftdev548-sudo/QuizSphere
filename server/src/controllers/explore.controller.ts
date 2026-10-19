@@ -4,6 +4,12 @@ import { Category } from '../models/Category.js';
 import { Poll } from '../models/Poll.js';
 import { PollVote } from '../models/PollVote.js';
 import { Quiz, QuizVersion } from '../models/Quiz.js';
+import { QuizAttempt } from '../models/QuizAttempt.js';
+import { QuizPrizePool } from '../models/PrizePool.js';
+import { User } from '../models/User.js';
+import { Notification } from '../models/Notification.js';
+import { runInTransaction } from '../services/transaction.service.js';
+import { scoreAnswers } from '../services/scoring.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendData, pageNumber } from '../utils/http.js';
 
@@ -25,7 +31,7 @@ export async function explore(req: Request, res: Response): Promise<void> {
   const difficulty = ['beginner', 'intermediate', 'advanced'].includes(String(req.query.difficulty)) ? req.query.difficulty : undefined;
   const sort = ['newest', 'fee_low', 'closing_soon'].includes(String(req.query.sort)) ? String(req.query.sort) : 'newest';
   const time = now();
-  const quizQuery: Record<string, unknown> = { status: 'published', $and: [{ $or: [{ closesAt: null }, { closesAt: { $gt: time } }] }] };
+  const quizQuery: Record<string, unknown> = { status: 'published', $and: [{ $or: [{ closesAt: null }, { closesAt: { $gt: time } }, { closesAt: { $lte: time }, $or: [{ quizType: 'special_event' }, { quizType: null }] }] }] };
   const pollQuery: Record<string, unknown> = { status: 'published', $and: [{ $or: [{ startsAt: null }, { startsAt: { $lte: time } }] }, { $or: [{ closesAt: null }, { closesAt: { $gt: time } }] }] };
   if (regex) {
     quizQuery.$or = [{ title: regex }, { description: regex }, { tags: regex }];
@@ -46,10 +52,10 @@ export async function explore(req: Request, res: Response): Promise<void> {
   ]);
   const quizzes = (quizItems as any[]).map((item) => ({
     id: String(item._id), type: 'quiz', title: item.title, description: item.description, category: item.categoryId?.name ?? null,
-    difficulty: item.difficulty, questionCount: item.questionCount, timeLimitSeconds: item.timeLimitSeconds,
+    quizType: item.quizType ?? (item.closesAt ? 'special_event' : 'general'), startsAt: item.startsAt ?? null, difficulty: item.difficulty, questionCount: item.questionCount, timeLimitSeconds: item.timeLimitSeconds,
     creator: item.creatorId ? { id: String(item.creatorId._id), username: item.creatorId.username, displayName: item.creatorId.displayName, avatarUrl: item.creatorId.avatarUrl ?? null } : null,
     entryFee: item.entryFee, prizeRules: item.prizeRules, creatorFundedPrize: item.creatorFundedPrize,
-    attemptCount: item.attemptCount, publishedAt: item.publishedAt, closesAt: item.closesAt,
+    attemptCount: item.attemptCount, publishedAt: item.publishedAt, closesAt: item.closesAt, closed: Boolean(item.closesAt && item.closesAt <= time),
   }));
   const polls = (pollItems as any[]).map((item) => ({
     id: String(item._id), type: 'poll', title: item.title, description: item.description, category: item.categoryId?.name ?? null,
@@ -71,15 +77,81 @@ export async function explore(req: Request, res: Response): Promise<void> {
 export async function quizDetail(req: Request, res: Response): Promise<void> {
   const quiz = await Quiz.findOne({ _id: req.params.id, status: 'published' })
     .populate('creatorId', 'username displayName avatarUrl createdAt').populate('categoryId', 'name').lean() as any;
-  if (!quiz || (quiz.closesAt && quiz.closesAt <= now())) throw new ApiError(404, 'This quiz is not currently available.', 'CONTENT_NOT_FOUND');
+  const time = now();
+  const quizType = quiz?.quizType ?? (quiz?.closesAt ? 'special_event' : 'general');
+  if (!quiz || (quiz.closesAt && quiz.closesAt <= time && quizType !== 'special_event')) throw new ApiError(404, 'This quiz is not currently available.', 'CONTENT_NOT_FOUND');
+  const pool = await QuizPrizePool.findOne({ quizId: quiz._id }).select('fundedAmount paidAmount status').lean() as any;
+  const closed = Boolean(quiz.closesAt && quiz.closesAt <= time);
   sendData(res, {
     id: String(quiz._id), type: 'quiz', title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null,
-    difficulty: quiz.difficulty, tags: quiz.tags, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds,
-    passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, prizeRules: quiz.prizeRules,
-    creatorFundedPrize: quiz.creatorFundedPrize, closesAt: quiz.closesAt, allowResultReview: quiz.allowResultReview,
+    quizType, difficulty: quiz.difficulty, tags: quiz.tags, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds,
+    passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, requiredPassKey: quiz.requiredPassKey ?? null, prizeRules: quiz.prizeRules,
+    creatorFundedPrize: quiz.creatorFundedPrize, rewardPerWinner: quiz.rewardPerWinner ?? 0, rewardPoolRemaining: pool?.status === 'open' ? Math.max(0, pool.fundedAmount - (pool.paidAmount ?? 0)) : 0,
+    startsAt: quiz.startsAt ?? null, closesAt: quiz.closesAt, closed, allowResultReview: quiz.allowResultReview,
     creator: quiz.creatorId ? { id: String(quiz.creatorId._id), username: quiz.creatorId.username, displayName: quiz.creatorId.displayName, avatarUrl: quiz.creatorId.avatarUrl ?? null, createdAt: quiz.creatorId.createdAt } : null,
     publishedAt: quiz.publishedAt,
   });
+}
+
+export async function quizEventResults(req: Request, res: Response): Promise<void> {
+  const quiz = await Quiz.findOne({ _id: req.params.id, status: 'published' }).select('quizType closesAt title passingScorePercent').lean() as any;
+  const quizType = quiz?.quizType ?? (quiz?.closesAt ? 'special_event' : 'general');
+  if (!quiz || quizType !== 'special_event' || !quiz.closesAt) throw new ApiError(404, 'Special Event results are not available.', 'CONTENT_NOT_FOUND');
+  if (quiz.closesAt > now()) throw new ApiError(409, 'Special Event results will be available after the quiz closes.', 'RESULTS_PENDING');
+  await runInTransaction(async (session) => {
+    const activeAttempts = await QuizAttempt.find({ quizId: quiz._id, status: 'in_progress' }).session(session);
+    const versions = new Map<string, any>();
+    for (const attempt of activeAttempts) {
+      const versionId = String(attempt.quizVersionId);
+      let version = versions.get(versionId);
+      if (!version) {
+        version = await QuizVersion.findById(attempt.quizVersionId).session(session);
+        if (!version) throw new ApiError(409, 'An active attempt references an unavailable quiz version.', 'QUIZ_VERSION_NOT_FOUND');
+        versions.set(versionId, version);
+      }
+      const scored = scoreAnswers(version.questions as any[], attempt.answers as any[]);
+      attempt.status = 'expired';
+      attempt.score = scored.percent;
+      attempt.maxScore = scored.maxScore;
+      attempt.correctCount = scored.correctCount;
+      attempt.passed = scored.percent >= quiz.passingScorePercent;
+      attempt.submittedAt = quiz.closesAt;
+      await attempt.save({ session });
+      await Notification.create([{
+        userId: attempt.userId,
+        type: 'result_available',
+        title: 'Your quiz result is ready',
+        message: `Your attempt for “${quiz.title}” was finalized when the event closed.`,
+        link: `/attempts/${attempt._id}`,
+        relatedType: 'attempt',
+        relatedId: attempt._id,
+      }], { session });
+    }
+  });
+  const attempts = await QuizAttempt.find({ quizId: quiz._id, status: { $in: ['completed', 'expired'] }, score: { $ne: null } })
+    .sort({ score: -1, submittedAt: 1, _id: 1 }).select('userId score passed submittedAt').lean() as any[];
+  const bestByUser = new Map<string, any>();
+  for (const attempt of attempts) {
+    const userId = String(attempt.userId);
+    if (!bestByUser.has(userId)) bestByUser.set(userId, attempt);
+  }
+  const rows = [...bestByUser.entries()].map(([userId, attempt]) => ({ userId, score: attempt.score ?? 0, passed: Boolean(attempt.passed), submittedAt: attempt.submittedAt }));
+  const eligible = rows.filter((row) => row.passed);
+  let currentRank = 0;
+  let previousScore: number | null = null;
+  const rankByUser = new Map<string, number>();
+  eligible.forEach((row, index) => {
+    if (row.score !== previousScore) currentRank = index + 1;
+    rankByUser.set(row.userId, currentRank);
+    previousScore = row.score;
+  });
+  const users = await User.find({ _id: { $in: rows.map((row) => row.userId) }, status: 'active' }).select('username displayName avatarUrl').lean();
+  const byId = new Map(users.map((user) => [String(user._id), user]));
+  const items = rows.flatMap((row) => {
+    const user = byId.get(row.userId);
+    return user ? [{ rank: rankByUser.get(row.userId) ?? null, score: row.score, passed: row.passed, submittedAt: row.submittedAt, user: { id: row.userId, username: user.username, displayName: user.displayName, avatarUrl: user.avatarUrl ?? null } }] : [];
+  });
+  sendData(res, { quizTitle: quiz.title, items, participantCount: rows.length });
 }
 
 export async function pollDetail(req: Request, res: Response): Promise<void> {

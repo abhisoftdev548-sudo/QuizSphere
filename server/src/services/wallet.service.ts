@@ -2,11 +2,12 @@ import { Types, type ClientSession } from 'mongoose';
 import { QCoinLedger } from '../models/QCoinLedger.js';
 import { User } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
+import { UserPass } from '../models/UserPass.js';
 
 export type LedgerInput = {
   userId: string | Types.ObjectId;
   amount: number;
-  type: 'signup_bonus' | 'creation_fee' | 'quiz_entry_fee' | 'poll_vote_fee' | 'quiz_reward' | 'poll_reward' | 'prize_payout' | 'refund' | 'admin_adjustment';
+  type: 'signup_bonus' | 'creation_fee' | 'quiz_entry_fee' | 'poll_vote_fee' | 'quiz_reward' | 'poll_reward' | 'prize_payout' | 'prize_funding' | 'pass_purchase' | 'pass_sale' | 'pass_marketplace_purchase' | 'refund' | 'admin_adjustment';
   idempotencyKey: string;
   description: string;
   relatedType?: 'quiz' | 'poll' | 'attempt' | 'vote' | 'admin' | 'account' | null;
@@ -44,4 +45,24 @@ export async function applyLedgerEntry(input: LedgerInput, session: ClientSessio
   }], { session });
   if (!ledger) throw new ApiError(500, 'Unable to write the QCoin ledger entry.', 'LEDGER_WRITE_FAILED');
   return ledger;
+}
+
+export async function consumePass(userId: string | Types.ObjectId, passKey: string, session: ClientSession) {
+  const inventory = await UserPass.findOneAndUpdate(
+    { userId, passKey, balance: { $gte: 1 } },
+    { $inc: { balance: -1 } },
+    { new: true, session },
+  );
+  if (!inventory) {
+    throw new ApiError(402, `You need one ${passKey === 'create' ? 'Create' : passKey.toUpperCase()} Pass for this action.`, 'PASS_REQUIRED', { passKey });
+  }
+  return inventory;
+}
+
+export async function grantPass(userId: string | Types.ObjectId, passKey: string, session: ClientSession) {
+  return UserPass.findOneAndUpdate(
+    { userId, passKey },
+    { $inc: { balance: 1 }, $setOnInsert: { userId, passKey } },
+    { upsert: true, new: true, session, setDefaultsOnInsert: true },
+  );
 }

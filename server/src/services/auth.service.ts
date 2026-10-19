@@ -9,12 +9,27 @@ export type RefreshClaims = { sub: string; sid: string; jti: string; family: str
 const accessCookie = 'qs_access';
 const refreshCookie = 'qs_refresh';
 const csrfCookie = 'qs_csrf';
-const cookieSettings = { secure: env.COOKIE_SECURE || env.NODE_ENV === 'production', sameSite: 'lax' as const, path: '/' };
+const cookieSettings = {
+  secure: env.COOKIE_SECURE || env.NODE_ENV === 'production' || env.COOKIE_SAME_SITE === 'none',
+  sameSite: env.COOKIE_SAME_SITE,
+  path: '/',
+  ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
+};
 
 function digest(token: string): string { return crypto.createHash('sha256').update(token).digest('hex'); }
 
 export function createAccessToken(user: { _id: unknown; role: 'user' | 'admin' }, sessionId: string): string {
   return jwt.sign({ sub: String(user._id), role: user.role, sid: sessionId } satisfies AccessClaims, env.ACCESS_TOKEN_SECRET, { expiresIn: env.ACCESS_TOKEN_TTL as SignOptions['expiresIn'] });
+}
+
+export function issueCsrfToken(res: Response): string {
+  const token = crypto.randomBytes(24).toString('hex');
+  res.cookie(csrfCookie, token, { ...cookieSettings, httpOnly: false, maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000 });
+  return token;
+}
+
+export function issueAccessCookie(user: { _id: unknown; role: 'user' | 'admin' }, sessionId: string, res: Response): void {
+  res.cookie(accessCookie, createAccessToken(user, sessionId), { ...cookieSettings, httpOnly: true, maxAge: 15 * 60 * 1000 });
 }
 
 export async function issueSession(user: { _id: unknown; role: 'user' | 'admin' }, req: Request, res: Response, familyId: string = crypto.randomUUID()): Promise<string> {
@@ -23,10 +38,9 @@ export async function issueSession(user: { _id: unknown; role: 'user' | 'admin' 
   const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
   const refreshToken = jwt.sign({ sub: String(user._id), sid: sessionId, jti, family: familyId } satisfies RefreshClaims, env.REFRESH_TOKEN_SECRET, { expiresIn: `${env.REFRESH_TOKEN_TTL_DAYS}d` });
   const storedSession = await RefreshToken.create({ userId: user._id, sessionId, tokenHash: digest(refreshToken), familyId, expiresAt, userAgent: req.get('user-agent') ?? '', ipAddress: req.ip ?? '' });
-  const accessToken = createAccessToken(user, sessionId);
-  res.cookie(accessCookie, accessToken, { ...cookieSettings, httpOnly: true, maxAge: 15 * 60 * 1000 });
+  issueAccessCookie(user, sessionId, res);
   res.cookie(refreshCookie, refreshToken, { ...cookieSettings, httpOnly: true, maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000 });
-  res.cookie(csrfCookie, crypto.randomBytes(24).toString('hex'), { ...cookieSettings, httpOnly: false, maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000 });
+  issueCsrfToken(res);
   return String(storedSession._id);
 }
 

@@ -17,6 +17,7 @@ import pollRoutes from './routes/poll.routes.js';
 import leaderboardRoutes from './routes/leaderboard.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import platformRoutes from './routes/platform.routes.js';
+import passRoutes from './routes/pass.routes.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -50,6 +51,7 @@ app.use('/api/v1/participation', attemptRoutes);
 app.use('/api/v1/polls', pollRoutes);
 app.use('/api/v1/leaderboards', leaderboardRoutes);
 app.use('/api/v1/platform', platformRoutes);
+app.use('/api/v1/passes', passRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1', notFound);
 app.use(errorHandler);

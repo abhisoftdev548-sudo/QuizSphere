@@ -54,7 +54,7 @@ function ExploreCard({ item, base }: { item: ExploreItem; base: string }) {
   return <Card className="group flex h-full flex-col overflow-hidden transition duration-200 hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-soft">
     <div className={`h-1 ${isQuiz ? 'bg-brand-500' : 'bg-indigo-400'}`} />
     <div className="flex flex-1 flex-col p-5">
-      <div className="flex items-center justify-between gap-3"><span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${isQuiz ? 'bg-brand-50 text-brand-700' : 'bg-indigo-50 text-indigo-700'}`}>{isQuiz ? 'Quiz' : 'Poll'}</span>{item.category && <span className="truncate text-xs font-medium text-slate-400">{item.category}</span>}</div>
+      <div className="flex items-center justify-between gap-3"><span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${isQuiz ? 'bg-brand-50 text-brand-700' : 'bg-indigo-50 text-indigo-700'}`}>{isQuiz ? item.quizType === 'special_event' ? 'Special Event' : 'General Quiz' : 'Poll'}</span>{item.category && <span className="truncate text-xs font-medium text-slate-400">{item.category}</span>}</div>
       <h2 className="mt-4 line-clamp-2 text-[16px] font-bold leading-6 text-ink">{item.title}</h2>
       <p className="mt-2 line-clamp-2 min-h-[42px] text-sm leading-[21px] text-slate-500">{item.description || 'No description provided.'}</p>
       <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-slate-500">
@@ -68,8 +68,10 @@ function ExploreCard({ item, base }: { item: ExploreItem; base: string }) {
       <div className="mt-auto pt-5">
         <div className="flex items-center justify-between border-t border-slate-100 pt-4">
           <div className="min-w-0"><p className="truncate text-xs font-medium text-slate-500">By {item.creator?.displayName ?? 'QuizSphere creator'}</p><p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-700"><Coins size={13} className="text-brand-600" />{isQuiz ? item.entryFee ?? 0 : item.votingFee ?? 0} QCoins {isQuiz ? 'entry' : 'to vote'}</p></div>
-          <Link to={href} className="ml-3 inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-brand-700 transition group-hover:bg-brand-600 group-hover:text-white">View details<ArrowUpRight size={14} /></Link>
+          <Link to={href} className="ml-3 inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-brand-700 transition group-hover:bg-brand-600 group-hover:text-white">{item.closed ? 'View results' : 'View details'}<ArrowUpRight size={14} /></Link>
         </div>
+        {item.closed && <p className="mt-2 text-[11px] font-semibold text-emerald-700">Event closed · final results available</p>}
+        {!item.closed && item.startsAt && <p className="mt-2 text-[11px] text-slate-400">Starts {new Date(item.startsAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</p>}
         {item.closesAt && <p className="mt-3 text-[11px] text-slate-400">Closes {new Date(item.closesAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>}
       </div>
     </div>

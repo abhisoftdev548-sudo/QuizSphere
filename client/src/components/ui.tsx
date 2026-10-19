@@ -1,4 +1,4 @@
-import { useEffect, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, useEffect, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { X, Inbox } from 'lucide-react';
 import type { Status } from '../types/api';
@@ -85,12 +85,12 @@ export function Field({ label, error, hint, children, className = '' }: { label:
   return <div className={`space-y-1.5 ${className}`}><label className="block text-xs font-semibold text-slate-700">{label}</label>{children}{error ? <p className="text-xs text-rose-600">{error}</p> : hint ? <p className="text-xs leading-5 text-slate-400">{hint}</p> : null}</div>;
 }
 
-export function TextInput({ className = '', ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={`input-base ${className}`} {...props} />;
-}
-export function TextArea({ className = '', ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={`input-base min-h-[104px] resize-y ${className}`} {...props} />;
-}
-export function SelectInput({ className = '', children, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select className={`input-base ${className}`} {...props}>{children}</select>;
-}
+export const TextInput = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(function TextInput({ className = '', ...props }, ref) {
+  return <input ref={ref} className={`input-base ${className}`} {...props} />;
+});
+export const TextArea = forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(function TextArea({ className = '', ...props }, ref) {
+  return <textarea ref={ref} className={`input-base min-h-[104px] resize-y ${className}`} {...props} />;
+});
+export const SelectInput = forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement>>(function SelectInput({ className = '', children, ...props }, ref) {
+  return <select ref={ref} className={`input-base ${className}`} {...props}>{children}</select>;
+});

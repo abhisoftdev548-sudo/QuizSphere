@@ -22,6 +22,9 @@ export type ExploreItem = {
   description: string;
   category: string | null;
   creator: Creator;
+  quizType?: 'general' | 'special_event';
+  startsAt?: string | null;
+  closed?: boolean;
   entryFee?: number;
   votingFee?: number;
   difficulty?: 'beginner' | 'intermediate' | 'advanced';

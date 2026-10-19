@@ -7,7 +7,7 @@ import { Notification } from '../models/Notification.js';
 import { RefreshToken } from '../models/RefreshToken.js';
 import { PasswordResetToken } from '../models/PasswordResetToken.js';
 import { User } from '../models/User.js';
-import { issueSession, clearAuthCookies, getRefreshToken, hashToken, verifyRefreshToken } from '../services/auth.service.js';
+import { issueSession, issueAccessCookie, clearAuthCookies, getRefreshToken, hashToken, verifyRefreshToken } from '../services/auth.service.js';
 import { runInTransaction } from '../services/transaction.service.js';
 import { applyLedgerEntry } from '../services/wallet.service.js';
 import { emailDeliveryConfigured, sendPasswordResetEmail } from '../services/email.service.js';
@@ -20,6 +20,25 @@ function publicUser(user: any) {
     role: user.role, status: user.status, walletBalance: user.walletBalance,
     avatarUrl: user.avatarUrl ?? null, bio: user.bio ?? '', createdAt: user.createdAt,
   };
+}
+
+async function recoverConcurrentRefresh(storedId: unknown, userId: string, res: Response): Promise<ReturnType<typeof publicUser> | null> {
+  const graceMs = 30_000;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const previous = await RefreshToken.findById(storedId).select('revokedAt replacedBy').lean();
+    if (previous?.revokedAt && previous.replacedBy && previous.revokedAt.getTime() > Date.now() - graceMs) {
+      const replacement = await RefreshToken.findById(previous.replacedBy);
+      if (replacement && !replacement.revokedAt && replacement.expiresAt.getTime() > Date.now()) {
+        const user = await User.findOne({ _id: userId, status: 'active' }).select('_id role email username displayName status walletBalance avatarUrl bio createdAt');
+        if (user) {
+          issueAccessCookie(user, replacement.sessionId, res);
+          return publicUser(user);
+        }
+      }
+    }
+    if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return null;
 }
 
 export async function register(req: Request, res: Response): Promise<void> {
@@ -76,6 +95,13 @@ export async function refresh(req: Request, res: Response): Promise<void> {
     throw new ApiError(401, 'Your session is no longer valid. Please sign in again.', 'SESSION_EXPIRED');
   }
   if (stored.revokedAt) {
+    const user = stored.revokedAt.getTime() > Date.now() - 30_000
+      ? await recoverConcurrentRefresh(stored._id, claims.sub, res)
+      : null;
+    if (user) {
+      sendData(res, { user });
+      return;
+    }
     await RefreshToken.updateMany({ familyId: stored.familyId, revokedAt: null }, { $set: { revokedAt: new Date() } });
     clearAuthCookies(res);
     throw new ApiError(401, 'A reused session token was detected. Please sign in again.', 'SESSION_REUSE_DETECTED');
@@ -85,7 +111,19 @@ export async function refresh(req: Request, res: Response): Promise<void> {
     throw new ApiError(401, 'Your session has expired. Please sign in again.', 'SESSION_EXPIRED');
   }
   const claimed = await RefreshToken.findOneAndUpdate({ _id: stored._id, revokedAt: null }, { $set: { revokedAt: new Date() } }, { new: true });
-  if (!claimed) { clearAuthCookies(res); throw new ApiError(401, 'Your session has already been refreshed.', 'SESSION_ROTATED'); }
+  if (!claimed) {
+    const concurrentUser = await recoverConcurrentRefresh(stored._id, claims.sub, res);
+    if (concurrentUser) {
+      sendData(res, { user: concurrentUser });
+      return;
+    }
+    const latest = await RefreshToken.findById(stored._id).select('revokedAt').lean();
+    if (latest?.revokedAt && latest.revokedAt.getTime() > Date.now() - 30_000) {
+      throw new ApiError(409, 'Session refresh is still completing. Please retry your request.', 'SESSION_ROTATION_IN_PROGRESS');
+    }
+    clearAuthCookies(res);
+    throw new ApiError(401, 'Your session has already been refreshed.', 'SESSION_ROTATED');
+  }
   const user = await User.findById(claims.sub).select('_id role email username displayName status walletBalance avatarUrl bio createdAt');
   if (!user || user.status !== 'active') {
     clearAuthCookies(res);

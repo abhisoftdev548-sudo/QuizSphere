@@ -8,10 +8,14 @@ import { PlatformConfig } from '../models/PlatformConfig.js';
 import { Poll } from '../models/Poll.js';
 import { Quiz, QuizVersion } from '../models/Quiz.js';
 import { QuizPrizePool, PollPrizePool } from '../models/PrizePool.js';
+import { QuizAttempt } from '../models/QuizAttempt.js';
 import { QCoinLedger } from '../models/QCoinLedger.js';
 import { Report } from '../models/Report.js';
 import { User } from '../models/User.js';
+import { PASS_PRODUCTS, passProductsOrDefault } from '../constants/passes.js';
 import { applyLedgerEntry } from '../services/wallet.service.js';
+import { distributePrize } from '../services/prize.service.js';
+import { scoreAnswers } from '../services/scoring.service.js';
 import { runInTransaction } from '../services/transaction.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendData, pageNumber } from '../utils/http.js';
@@ -62,7 +66,7 @@ export async function reviewDetail(req: Request, res: Response): Promise<void> {
     if (!quiz) throw new ApiError(404, 'Quiz submission not found.', 'CONTENT_NOT_FOUND');
     const version = quiz.currentVersionId ? await QuizVersion.findById(quiz.currentVersionId).lean() as any : null;
     const history = await AdminReview.find({ targetType: 'quiz', targetId: quiz._id }).sort({ createdAt: -1 }).populate('adminId', 'username displayName').lean();
-    sendData(res, { item: { id: String(quiz._id), type, title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, creator: publicAdminUser(quiz.creatorId), status: quiz.status, difficulty: quiz.difficulty, tags: quiz.tags, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, prizeRules: quiz.prizeRules, creatorFundedPrize: quiz.creatorFundedPrize, reviewFeedback: quiz.reviewFeedback, version: quiz.version, questions: version?.questions ?? [] }, history });
+    sendData(res, { item: { id: String(quiz._id), type, title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, creator: publicAdminUser(quiz.creatorId), status: quiz.status, quizType: quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general'), difficulty: quiz.difficulty, tags: quiz.tags, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, startsAt: quiz.startsAt ?? null, closesAt: quiz.closesAt, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, requiredPassKey: quiz.requiredPassKey ?? null, prizeRules: quiz.prizeRules, creatorFundedPrize: quiz.creatorFundedPrize, rewardPerWinner: quiz.rewardPerWinner ?? 0, reviewFeedback: quiz.reviewFeedback, version: quiz.version, questions: version?.questions ?? [] }, history });
   } else if (type === 'poll') {
     const poll = await Poll.findById(id).populate('creatorId', 'username displayName email').populate('categoryId', 'name').lean() as any;
     if (!poll) throw new ApiError(404, 'Poll submission not found.', 'CONTENT_NOT_FOUND');
@@ -121,11 +125,11 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
 
 export async function getPlatformConfig(_req: Request, res: Response): Promise<void> {
   const config = await PlatformConfig.findById('global').lean();
-  sendData(res, { config: config ?? { _id: 'global', signupBonus: 100, freeQuizQuestionLimit: 10, additionalQuestionFee: 0, maxQuizEntryFee: 500, maxPollVoteFee: 100, maxQuizQuestions: 50 } });
+  sendData(res, { config: { _id: 'global', signupBonus: 100, freeQuizQuestionLimit: 10, specialEventRequiresCreatePass: true, additionalQuestionFee: 0, maxQuizEntryFee: 500, maxPollVoteFee: 100, maxQuizQuestions: 50, ...config, passProducts: passProductsOrDefault(config?.passProducts as any) } });
 }
 
 export async function updatePlatformConfig(req: Request, res: Response): Promise<void> {
-  const updates = req.body as Record<string, number>;
+  const updates = req.body as Record<string, unknown>;
   const current = await PlatformConfig.findById('global').lean();
   const config = await PlatformConfig.findOneAndUpdate({ _id: 'global' }, { $set: { ...updates, updatedBy: req.auth!.userId } }, { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true });
   await AuditLog.create({ actorId: req.auth!.userId, action: 'platform_pricing_updated', targetType: 'platform_config', targetId: 'global', reason: 'Platform pricing and limits updated.', ipAddress: req.ip ?? '', metadata: { before: current ?? null, after: updates } });
@@ -177,8 +181,142 @@ export async function adjustWallet(req: Request, res: Response): Promise<void> {
 }
 
 export async function getSettlements(_req: Request, res: Response): Promise<void> {
-  const [quizzes, polls] = await Promise.all([QuizPrizePool.find().sort({ updatedAt: -1 }).populate('quizId', 'title status').lean(), PollPrizePool.find().sort({ updatedAt: -1 }).populate('pollId', 'title status').lean()]);
-  sendData(res, { items: [...quizzes.map((item: any) => ({ id: String(item._id), type: 'quiz', contentId: item.quizId?._id ? String(item.quizId._id) : null, title: item.quizId?.title ?? 'Unavailable quiz', status: item.status, fundedAmount: item.fundedAmount, collectedFees: item.collectedEntryFees, settledAmount: item.settledAmount, updatedAt: item.updatedAt })), ...polls.map((item: any) => ({ id: String(item._id), type: 'poll', contentId: item.pollId?._id ? String(item.pollId._id) : null, title: item.pollId?.title ?? 'Unavailable poll', status: item.status, fundedAmount: item.fundedAmount, collectedFees: item.collectedVotingFees, settledAmount: item.settledAmount, updatedAt: item.updatedAt }))] });
+  const [quizzes, polls] = await Promise.all([QuizPrizePool.find().sort({ updatedAt: -1 }).populate('quizId', 'title status quizType closesAt').lean(), PollPrizePool.find().sort({ updatedAt: -1 }).populate('pollId', 'title status').lean()]);
+  sendData(res, { items: [...quizzes.map((item: any) => ({ id: String(item._id), type: 'quiz', quizType: item.quizId?.quizType ?? (item.quizId?.closesAt ? 'special_event' : 'general'), contentId: item.quizId?._id ? String(item.quizId._id) : null, title: item.quizId?.title ?? 'Unavailable quiz', closesAt: item.quizId?.closesAt ?? null, status: item.status, fundedAmount: item.fundedAmount, paidAmount: item.paidAmount ?? 0, collectedFees: item.collectedEntryFees, settledAmount: item.settledAmount, refundedAmount: item.refundedAmount ?? 0, updatedAt: item.updatedAt })), ...polls.map((item: any) => ({ id: String(item._id), type: 'poll', contentId: item.pollId?._id ? String(item.pollId._id) : null, title: item.pollId?.title ?? 'Unavailable poll', closesAt: null, status: item.status, fundedAmount: item.fundedAmount, paidAmount: 0, collectedFees: item.collectedVotingFees, settledAmount: item.settledAmount, refundedAmount: 0, updatedAt: item.updatedAt }))] });
+}
+
+export async function settleQuizPrize(req: Request, res: Response): Promise<void> {
+  const result = await runInTransaction(async (session) => {
+    const quiz = await Quiz.findById(req.params.id).session(session);
+    if (!quiz || quiz.status !== 'published') throw new ApiError(404, 'Published quiz not found.', 'CONTENT_NOT_FOUND');
+    const pool = await QuizPrizePool.findOne({ quizId: quiz._id }).session(session);
+    if (pool?.status === 'settled') return { quizId: String(quiz._id), settledAmount: pool.settledAmount, refundedAmount: pool.refundedAmount, winners: 0, alreadySettled: true };
+    if (!pool || pool.status !== 'open') throw new ApiError(409, 'This quiz has no open prize pool.', 'PRIZE_POOL_UNAVAILABLE');
+    const quizType = quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general');
+    if (quizType === 'general') {
+      const refundedAmount = Math.max(0, pool.fundedAmount - (pool.paidAmount ?? 0));
+      if (refundedAmount > 0) {
+        await applyLedgerEntry({
+          userId: quiz.creatorId,
+          amount: refundedAmount,
+          type: 'refund',
+          idempotencyKey: `quiz-prize-refund:${quiz._id}`,
+          description: `Unused general quiz prize pool for “${quiz.title}”`,
+          relatedType: 'quiz',
+          relatedId: quiz._id,
+        }, session);
+      }
+      pool.status = 'settled';
+      pool.settledAmount = pool.paidAmount ?? 0;
+      pool.refundedAmount = refundedAmount;
+      pool.settledAt = new Date();
+      pool.settlementKey = `quiz-settlement:${quiz._id}`;
+      await pool.save({ session });
+      const summary = { quizId: String(quiz._id), settledAmount: pool.settledAmount, refundedAmount, winners: 0, alreadySettled: false };
+      await AuditLog.create([{
+        actorId: req.auth!.userId,
+        action: 'quiz_prize_settled',
+        targetType: 'quiz',
+        targetId: summary.quizId,
+        reason: 'Remaining General Quiz prize pool was refunded.',
+        ipAddress: req.ip ?? '',
+        metadata: summary,
+      }], { session });
+      return summary;
+    }
+    if (!quiz.closesAt || quiz.closesAt.getTime() > Date.now()) throw new ApiError(409, 'The quiz must reach its closing time before prize settlement.', 'QUIZ_NOT_CLOSED');
+    const activeAttempts = await QuizAttempt.find({ quizId: quiz._id, status: 'in_progress' }).session(session);
+    if (activeAttempts.length > 0) {
+      const versions = new Map<string, any>();
+      for (const attempt of activeAttempts) {
+        const versionId = String(attempt.quizVersionId);
+        let version = versions.get(versionId);
+        if (!version) {
+          version = await QuizVersion.findById(attempt.quizVersionId).session(session);
+          if (!version) throw new ApiError(409, 'An active attempt references an unavailable quiz version.', 'QUIZ_VERSION_NOT_FOUND');
+          versions.set(versionId, version);
+        }
+        const scored = scoreAnswers(version.questions as any[], attempt.answers as any[]);
+        attempt.status = 'expired';
+        attempt.score = scored.percent;
+        attempt.maxScore = scored.maxScore;
+        attempt.correctCount = scored.correctCount;
+        attempt.passed = scored.percent >= quiz.passingScorePercent;
+        attempt.submittedAt = new Date();
+        await attempt.save({ session });
+        await Notification.create([{
+          userId: attempt.userId,
+          type: 'result_available',
+          title: 'Your quiz result is ready',
+          message: `Your attempt for “${quiz.title}” was finalized when the quiz closed.`,
+          link: `/attempts/${attempt._id}`,
+          relatedType: 'attempt',
+          relatedId: attempt._id,
+        }], { session });
+      }
+    }
+    const attempts = await QuizAttempt.find({ quizId: quiz._id, status: { $in: ['completed', 'expired'] }, passed: true })
+      .sort({ score: -1, submittedAt: 1, _id: 1 }).session(session);
+    const bestAttemptByUser = new Map<string, typeof attempts[number]>();
+    for (const attempt of attempts) {
+      const userId = String(attempt.userId);
+      if (!bestAttemptByUser.has(userId)) bestAttemptByUser.set(userId, attempt);
+    }
+    const winners = distributePrize(quiz.prizeRules, [...bestAttemptByUser.values()].map((attempt) => ({ id: String(attempt._id), userId: String(attempt.userId), score: attempt.score ?? 0 })), pool.fundedAmount);
+    let settledAmount = 0;
+    for (const winner of winners) {
+      if (winner.amount <= 0) continue;
+      await applyLedgerEntry({
+        userId: winner.userId,
+        amount: winner.amount,
+        type: 'prize_payout',
+        idempotencyKey: `quiz-prize:${quiz._id}:${winner.attemptId}`,
+        description: `Prize for rank ${winner.rank} in “${quiz.title}”`,
+        relatedType: 'quiz',
+        relatedId: quiz._id,
+      }, session);
+      await Notification.create([{
+        userId: winner.userId,
+        type: 'qcoin_earned',
+        title: 'Quiz prize received',
+        message: `You earned ${winner.amount} QCoins for rank ${winner.rank} in “${quiz.title}”.`,
+        link: '/app/wallet',
+        relatedType: 'quiz',
+        relatedId: quiz._id,
+      }], { session });
+      settledAmount += winner.amount;
+    }
+    const refundedAmount = pool.fundedAmount - settledAmount;
+    if (refundedAmount > 0) {
+      await applyLedgerEntry({
+        userId: quiz.creatorId,
+        amount: refundedAmount,
+        type: 'refund',
+        idempotencyKey: `quiz-prize-refund:${quiz._id}`,
+        description: `Unawarded prize balance for “${quiz.title}”`,
+        relatedType: 'quiz',
+        relatedId: quiz._id,
+      }, session);
+    }
+    pool.status = 'settled';
+    pool.settledAmount = settledAmount;
+    pool.refundedAmount = refundedAmount;
+    pool.settledAt = new Date();
+    pool.settlementKey = `quiz-settlement:${quiz._id}`;
+    await pool.save({ session });
+    const summary = { quizId: String(quiz._id), settledAmount, refundedAmount, winners: winners.filter((winner) => winner.amount > 0).length, alreadySettled: false };
+    await AuditLog.create([{
+      actorId: req.auth!.userId,
+      action: 'quiz_prize_settled',
+      targetType: 'quiz',
+      targetId: summary.quizId,
+      reason: 'Quiz prize pool was settled.',
+      ipAddress: req.ip ?? '',
+      metadata: summary,
+    }], { session });
+    return summary;
+  });
+  sendData(res, result);
 }
 
 export async function listAuditLogs(req: Request, res: Response): Promise<void> {

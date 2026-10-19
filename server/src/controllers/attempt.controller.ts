@@ -4,7 +4,7 @@ import { Quiz } from '../models/Quiz.js';
 import { QuizAttempt } from '../models/QuizAttempt.js';
 import { QuizPrizePool } from '../models/PrizePool.js';
 import { QuizVersion } from '../models/Quiz.js';
-import { applyLedgerEntry } from '../services/wallet.service.js';
+import { applyLedgerEntry, consumePass, grantPass } from '../services/wallet.service.js';
 import { isAnswerCorrect, scoreAnswers } from '../services/scoring.service.js';
 import { runInTransaction } from '../services/transaction.service.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -17,7 +17,8 @@ export async function startAttempt(req: Request, res: Response): Promise<void> {
   if (!requestKey || requestKey.length > 120) throw new ApiError(400, 'An Idempotency-Key header is required to start an attempt.', 'IDEMPOTENCY_KEY_REQUIRED');
   const quiz = await Quiz.findOne({ _id: req.params.id, status: 'published' }).lean() as any;
   const time = new Date();
-  if (!quiz || (quiz.closesAt && quiz.closesAt <= time) || !quiz.currentVersionId) throw new ApiError(404, 'This quiz is not currently available.', 'CONTENT_NOT_FOUND');
+  if (!quiz || (quiz.startsAt && quiz.startsAt > time) || (quiz.closesAt && quiz.closesAt <= time) || !quiz.currentVersionId) throw new ApiError(404, 'This quiz is not currently available.', 'CONTENT_NOT_FOUND');
+  if (String(quiz.creatorId) === owner(req)) throw new ApiError(403, 'Quiz creators cannot participate in their own quiz.', 'CREATOR_CANNOT_PARTICIPATE');
   const existingAttempt = await QuizAttempt.findOne({ userId: owner(req), quizId: quiz._id, requestKey }).lean() as any;
   if (existingAttempt) {
     const result = existingAttempt.status === 'in_progress' ? await authorizedQuestionPayload(String(existingAttempt._id), owner(req)) : null;
@@ -28,14 +29,21 @@ export async function startAttempt(req: Request, res: Response): Promise<void> {
   const result = await runInTransaction(async (session) => {
     const currentQuiz = await Quiz.findOne({ _id: quiz._id, status: 'published' }).session(session);
     if (!currentQuiz || !currentQuiz.currentVersionId) throw new ApiError(409, 'This quiz is no longer available.', 'CONTENT_CLOSED');
+    if (String(currentQuiz.creatorId) === owner(req)) throw new ApiError(403, 'Quiz creators cannot participate in their own quiz.', 'CREATOR_CANNOT_PARTICIPATE');
     const currentTime = new Date();
+    if (currentQuiz.startsAt && currentQuiz.startsAt > currentTime) throw new ApiError(409, 'This Special Event quiz has not started yet.', 'QUIZ_NOT_STARTED');
     if (currentQuiz.closesAt && currentQuiz.closesAt <= currentTime) throw new ApiError(409, 'This quiz has closed.', 'CONTENT_CLOSED');
     const version = await QuizVersion.findById(currentQuiz.currentVersionId).session(session);
     if (!version || version.questions.length < 1) throw new ApiError(409, 'This quiz is not ready for attempts.', 'CONTENT_UNAVAILABLE');
     const startedAt = new Date();
-    const expiresAt = currentQuiz.timeLimitSeconds ? new Date(startedAt.getTime() + currentQuiz.timeLimitSeconds * 1000) : null;
+    const quizDeadline = currentQuiz.timeLimitSeconds ? new Date(startedAt.getTime() + currentQuiz.timeLimitSeconds * 1000) : null;
+    const expiresAt = currentQuiz.closesAt && (!quizDeadline || currentQuiz.closesAt < quizDeadline) ? currentQuiz.closesAt : quizDeadline;
     const attempt = new QuizAttempt({ quizId: currentQuiz._id, quizVersionId: version._id, userId: owner(req), requestKey, startedAt, expiresAt, entryFee: currentQuiz.entryFee });
     await attempt.save({ session });
+    if (currentQuiz.requiredPassKey) {
+      await consumePass(owner(req), currentQuiz.requiredPassKey, session);
+      await grantPass(currentQuiz.creatorId, currentQuiz.requiredPassKey, session);
+    }
     if (currentQuiz.entryFee > 0) {
       const entry = await applyLedgerEntry({ userId: owner(req), amount: -currentQuiz.entryFee, type: 'quiz_entry_fee', idempotencyKey: `quiz-entry:${attempt._id}`, description: `Entry fee for “${currentQuiz.title}”`, relatedType: 'attempt', relatedId: attempt._id }, session);
       await Notification.create([{ userId: owner(req), type: 'qcoin_spent', title: 'QCoins used to start a quiz', message: `${currentQuiz.entryFee} QCoins were used for “${currentQuiz.title}”.`, link: `/app/quiz-session/${attempt._id}`, relatedType: 'ledger', relatedId: entry._id }], { session });
@@ -87,6 +95,39 @@ export async function submitAttempt(req: Request, res: Response): Promise<void> 
     attempt.correctCount = scored.correctCount;
     attempt.passed = scored.percent >= quiz.passingScorePercent;
     attempt.submittedAt = new Date();
+    const quizType = quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general');
+    if (attempt.passed && quizType === 'general' && quiz.rewardPerWinner > 0) {
+      const reward = quiz.rewardPerWinner;
+      const alreadyRewarded = await QuizAttempt.exists({ quizId: quiz._id, userId: attempt.userId, rewardAmount: { $gt: 0 } }).session(session);
+      if (!alreadyRewarded) {
+        const pool = await QuizPrizePool.findOneAndUpdate(
+          { quizId: quiz._id, status: 'open', $expr: { $lte: [{ $add: [{ $ifNull: ['$paidAmount', 0] }, reward] }, '$fundedAmount'] } },
+          { $inc: { paidAmount: reward } },
+          { new: true, session },
+        );
+        if (pool) {
+          await applyLedgerEntry({
+            userId: attempt.userId,
+            amount: reward,
+            type: 'prize_payout',
+            idempotencyKey: `general-quiz-prize:${attempt._id}`,
+            description: `Passing reward for “${quiz.title}”`,
+            relatedType: 'quiz',
+            relatedId: quiz._id,
+          }, session);
+          attempt.rewardAmount = reward;
+          await Notification.create([{
+            userId: attempt.userId,
+            type: 'qcoin_earned',
+            title: 'Quiz reward received',
+            message: `You earned ${reward} QCoins for passing “${quiz.title}”.`,
+            link: '/app/wallet',
+            relatedType: 'quiz',
+            relatedId: quiz._id,
+          }], { session });
+        }
+      }
+    }
     await attempt.save({ session });
     await Notification.create([{ userId: attempt.userId, type: 'result_available', title: 'Your quiz result is ready', message: `You scored ${scored.percent}% on “${quiz.title}”.`, link: `/attempts/${attempt._id}`, relatedType: 'attempt', relatedId: attempt._id }], { session });
     return attempt;
@@ -115,8 +156,10 @@ export async function getAttemptResult(req: Request, res: Response): Promise<voi
 }
 
 async function resultPayload(attempt: any) {
-  const quiz = await Quiz.findById(attempt.quizId).select('title allowResultReview passingScorePercent').lean() as any;
-  const base = { attempt: { ...publicAttempt(attempt), quizTitle: quiz?.title ?? 'Quiz' }, resultDetails: null as null | unknown[] };
+  const quiz = await Quiz.findById(attempt.quizId).select('title allowResultReview passingScorePercent quizType closesAt').lean() as any;
+  const quizType = quiz?.quizType ?? (quiz?.closesAt ? 'special_event' : 'general');
+  const rankPending = Boolean(quizType === 'special_event' && quiz?.closesAt && quiz.closesAt > new Date());
+  const base = { attempt: { ...publicAttempt(attempt), quizTitle: quiz?.title ?? 'Quiz' }, resultDetails: null as null | unknown[], rankPending };
   if (attempt.status === 'in_progress') return base;
   if (!quiz?.allowResultReview) return base;
   const version = await QuizVersion.findById(attempt.quizVersionId).lean() as any;

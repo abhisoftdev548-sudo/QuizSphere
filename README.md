@@ -9,13 +9,15 @@ QuizSphere is a full-stack community platform for creating and participating in 
 - Express REST API under `/api/v1`, Zod validation, centralized errors, rate limits, Helmet, CORS allowlist, CSRF double-submit checks, bcrypt password hashes, short-lived access cookies, rotating refresh sessions, and session revocation.
 - Mongoose schemas for users, refresh sessions, categories, platform rules, quiz versions/questions, polls/options, attempts, votes, ledger entries, prize-pool projections, reviews, notifications, ratings, reports, and audit records.
 - Server-calculated quiz scoring, timer enforcement, private answer payloads, vote uniqueness, result-visibility checks, QCoin ledger entries, and admin-configurable creation and participation limits.
+- General quizzes are open-ended and may pay one fixed reward per passing participant from a creator-funded pool. Special Event quizzes have scheduled start/close times, immediate private results, post-close public rankings, and admin-settled rank prizes.
+- Admins set the free question limit, whether Special Events require a Creator Pass, pass purchase prices, and fixed platform buyback prices. Required participation passes transfer to the quiz creator. Users can sell owned passes directly back to QuizSphere at the configured buyback price.
 - Signup bonus is credited by an idempotent ledger transaction (100 QCoins by default). MongoDB transactions are required for multi-document economy and moderation operations.
 - Optional password-reset email delivery via SMTP. In development without SMTP, a reset URL is returned only for an existing active account so the local reset flow can be exercised.
 - Unit tests cover scoring and content validation.
 
 ### Not yet complete
 
-This is an incremental implementation, not a claim that every item in the supplied product brief is finished. In particular, automatic tie-aware quiz prize settlement, poll reward funding/settlement, full refund/reconciliation workflows, upload/Cloudinary support, email verification, community-rating/report moderation screens, and some extended admin audit/user-inspection workflows still need implementation and end-to-end verification. Prize-pool models are present, but their payout lifecycle is not complete. Do not configure paid prizes for production until those settlement workflows are finished and tested.
+This is an incremental implementation, not a claim that every item in the supplied product brief is finished. Poll reward funding/settlement, full refund/reconciliation workflows, upload/Cloudinary support, email verification, community-rating/report moderation screens, and some extended admin audit/user-inspection workflows still need implementation and end-to-end verification. The quiz prize and pass flows have unit coverage but still need MongoDB-backed integration and production-like concurrency testing.
 
 ## Requirements
 
@@ -42,7 +44,7 @@ npm run dev
 - Vite client: <http://localhost:5173>
 - API: <http://localhost:4000/api/v1/health>
 
-Vite proxies `/api` to `http://127.0.0.1:4000` by default. Set `VITE_API_PROXY_TARGET` if your local API runs elsewhere. In deployment, the browser uses relative `/api/v1` paths; configure the hosting/reverse proxy to forward them to the API.
+Vite proxies `/api` to `http://127.0.0.1:4000` by default. Set `VITE_API_PROXY_TARGET` if your local API runs elsewhere. In deployment, the browser uses relative `/api/v1` paths unless `VITE_API_BASE_URL` is set to a full API base URL such as `https://api.example.com/api/v1`.
 
 ### First administrator
 
@@ -71,11 +73,13 @@ Registration never accepts a client-provided role. The promotion script writes a
 | `REFRESH_TOKEN_SECRET` | Different random secret, at least 32 characters |
 | `ACCESS_TOKEN_TTL` | Access JWT lifetime (default `15m`) |
 | `REFRESH_TOKEN_TTL_DAYS` | Refresh session lifetime (default `30`) |
+| `COOKIE_SAME_SITE` | `lax` by default; use `none` for a cross-site frontend/API deployment (HTTPS required) |
+| `COOKIE_DOMAIN` | Optional shared cookie domain when client and API use sibling subdomains |
 | `SIGNUP_BONUS_QCOINS` | Initial signup bonus (default `100`; can later be changed by admins) |
 | `COOKIE_SECURE` | Set `true` in HTTPS production |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Optional password-reset mail transport |
 
-Generate independent strong token secrets for each deployment. Never put secrets in `client/.env` or a `VITE_*` variable. The client only needs `VITE_API_PROXY_TARGET` for local development.
+Generate independent strong token secrets for each deployment. Never put secrets in `client/.env` or a `VITE_*` variable. `VITE_API_BASE_URL` is a public API URL, not a secret.
 
 ## API overview
 
@@ -83,22 +87,23 @@ All endpoints return `{ "success": true, "data": ... }` on success and `{ "succe
 
 - `POST /api/v1/auth/register|login|logout|refresh|forgot-password|reset-password`, `GET /api/v1/auth/me`
 - `GET /api/v1/platform/rules`
-- `GET /api/v1/explore` with `type`, `search`, `categoryId`, `difficulty`, `sort`, `page`, `limit`; `GET /categories`, `/quizzes/:id`, `/polls/:id`
+- `GET /api/v1/explore` with `type`, `search`, `categoryId`, `difficulty`, `sort`, `page`, `limit`; `GET /categories`, `/quizzes/:id`, `/quizzes/:id/results`, `/polls/:id`
 - `GET /api/v1/users/me/overview|attempts|notifications|wallet|wallet/transactions`; profile and notification read endpoints use `PATCH`
 - `/api/v1/creator` for drafts, submissions, creator analytics, and publishing approved content
 - `/api/v1/participation` for quiz attempt creation, answer saves, submission, and result retrieval
+- `/api/v1/passes` for pass inventory, QCoin purchases, and platform buyback (`POST /sell`)
 - `/api/v1/polls/:id/vote` and `/api/v1/polls/me/poll-votes`
 - `GET /api/v1/leaderboards?type=performance|consistency|creators&period=week|month|all`
 - `/api/v1/admin` for overview, reviews, users, configuration, categories, ledger, adjustments, settlements, and audit logs
 
-Creation and participation requests that can move QCoins require an `Idempotency-Key`. Quiz creation fees require the explicit `X-Confirm-QCoin-Fee: true` header after the API returns the current fee breakdown. Prices and eligibility are checked on the server.
+Wallet-moving purchases, quiz creation, and pass sales require an `Idempotency-Key`. Prices and eligibility are checked on the server.
 
 ## Business and security notes
 
 - The server is authoritative for roles, balances, prices, quiz answers, scores, vote eligibility, and review decisions.
 - Public quiz details do not include questions or answer keys. Questions are returned only after a valid attempt starts; scores are calculated on the server.
 - Anonymous poll responses contain no voter identity. Public result payloads follow each poll's visibility setting.
-- QCoins are virtual, non-cash, non-transferable platform credits. Every balance adjustment is recorded as a ledger entry; historical ledger rows are not edited.
+- QCoins are virtual, non-cash credits and cannot be withdrawn. Pass buybacks credit users at the administrator-configured amount. Every balance change is recorded as a ledger entry; historical ledger rows are not edited.
 - The initial free quiz question limit is 10. Pricing and limits are stored in `PlatformConfig` and can be changed in the admin workspace. A change affects new creation/participation actions; already committed ledger entries remain unchanged, and published content keeps its disclosed terms.
 - MongoDB multi-document transactions require Atlas or a replica set. Do not bypass transaction errors in production.
 - Production should use HTTPS, `COOKIE_SECURE=true`, a narrow `CLIENT_ORIGIN` allowlist, rotated secrets, restricted Atlas network access, and SMTP credentials stored in the hosting provider's secret manager.
@@ -111,7 +116,7 @@ npm run test --workspace server
 npm run build
 ```
 
-Tests currently cover deterministic score calculation, exact multiple-choice matching, unanswered questions, quiz answer-key validation, and poll option/date validation. A MongoDB-backed integration test suite and complete settlement concurrency tests remain to be added.
+Tests cover deterministic score calculation and rank payouts, General/Special Event validation, Creator Pass eligibility, exact multiple-choice matching, unanswered questions, quiz answer-key validation, and poll option/date validation. A MongoDB-backed integration test suite and complete settlement concurrency tests remain to be added.
 
 ## Deployment outline
 
@@ -129,6 +134,7 @@ Tests currently cover deterministic score calculation, exact multiple-choice mat
 - Output directory: `client/dist`
 - Add a rewrite so client-side routes serve `index.html`.
 - Route `/api/*` to the Render API, or configure an equivalent same-origin proxy. If using a separate API origin, set `CLIENT_ORIGIN` to the exact client origin and verify cookie/CORS behavior in production.
+- For a separate API origin, set the Vercel `VITE_API_BASE_URL` to the full API URL ending in `/api/v1`; on the API set `CLIENT_ORIGIN` to the exact website origin, `COOKIE_SAME_SITE=none`, and `COOKIE_SECURE=true`. Cookies require HTTPS and third-party-cookie blocking can prevent cross-site sessions, so a same-origin `/api` proxy is the most reliable deployment.
 
 ### MongoDB Atlas
 

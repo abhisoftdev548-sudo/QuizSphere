@@ -3,7 +3,7 @@ import { model, Schema } from 'mongoose';
 const ledgerSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   amount: { type: Number, required: true, validate: { validator: Number.isInteger, message: 'QCoin amounts must be whole numbers' } },
-  type: { type: String, required: true, enum: ['signup_bonus', 'creation_fee', 'quiz_entry_fee', 'poll_vote_fee', 'quiz_reward', 'poll_reward', 'prize_payout', 'refund', 'admin_adjustment'] },
+  type: { type: String, required: true, enum: ['signup_bonus', 'creation_fee', 'quiz_entry_fee', 'poll_vote_fee', 'quiz_reward', 'poll_reward', 'prize_payout', 'prize_funding', 'pass_purchase', 'pass_sale', 'pass_marketplace_purchase', 'refund', 'admin_adjustment'] },
   idempotencyKey: { type: String, required: true, unique: true, maxlength: 200 },
   relatedType: { type: String, enum: ['quiz', 'poll', 'attempt', 'vote', 'admin', 'account', null], default: null },
   relatedId: { type: Schema.Types.ObjectId, default: null },

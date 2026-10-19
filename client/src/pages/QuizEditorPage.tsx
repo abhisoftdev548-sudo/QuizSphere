@@ -1,18 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useFieldArray, useForm } from 'react-hook-form';
 import { z } from 'zod';
-import { ArrowDown, ArrowLeft, ArrowUp, Check, CircleHelp, Copy, Eye, FileCheck2, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, Check, CircleHelp, Copy, Eye, FileCheck2, Plus, Trash2, Upload, X } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, EmptyState, Field, Modal, PageHeader, PageSkeleton, SelectInput, TextArea, TextInput } from '../components/ui';
-import { apiErrorCode, apiErrorDetails, apiErrorMessage, getData, postData, putData } from '../services/api';
+import { apiErrorMessage, getData, postData, putData } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import type { Category } from '../types/api';
 
 type QuizQuestion = { type: 'single_choice' | 'multiple_choice' | 'true_false' | 'fill_blank' | 'short_answer'; prompt: string; options: Array<{ key: string; text: string }>; correctAnswers: string[]; explanation: string; hint: string; points: number };
-type QuizValues = { title: string; description: string; categoryId: string | null; tags: string[]; difficulty: 'beginner' | 'intermediate' | 'advanced'; language: string; coverImageUrl: string | null; timeLimitSeconds: number | null; passingScorePercent: number; entryFee: number; questions: QuizQuestion[] };
+type PrizeRule = { rank: number; sharePercent: number };
+type PassProduct = { key: string; name: string; kind: 'create' | 'participation'; price: number; active: boolean };
+type QuizValues = { title: string; description: string; categoryId: string | null; tags: string[]; quizType: 'general' | 'special_event'; difficulty: 'beginner' | 'intermediate' | 'advanced'; language: string; coverImageUrl: string | null; timeLimitSeconds: number | null; startsAt: string | null; closesAt: string | null; passingScorePercent: number; requiredPassKey: string | null; creatorFundedPrize: number; rewardPerWinner: number; prizeRules: PrizeRule[]; questions: QuizQuestion[] };
 const optionSchema = z.object({ key: z.string().min(1), text: z.string().trim().min(1, 'Add answer text.').max(250) });
 const questionSchema = z.object({
   type: z.enum(['single_choice', 'multiple_choice', 'true_false', 'fill_blank', 'short_answer']),
@@ -31,71 +33,242 @@ const quizSchema = z.object({
   description: z.string().trim().max(2000),
   categoryId: z.string().nullable(), tags: z.array(z.string()), difficulty: z.enum(['beginner', 'intermediate', 'advanced']),
   language: z.string().min(2).max(12), coverImageUrl: z.string().nullable(), timeLimitSeconds: z.number().int().min(30).max(7200).nullable(),
-  passingScorePercent: z.number().min(0).max(100), entryFee: z.number().int().min(0), questions: z.array(questionSchema).min(1).max(100),
+  quizType: z.enum(['general', 'special_event']), startsAt: z.string().datetime().nullable(), closesAt: z.string().datetime().nullable(),
+  passingScorePercent: z.number().min(0).max(100), requiredPassKey: z.enum(['vip', 'pro', 'legend', 'premium']).nullable(),
+  creatorFundedPrize: z.number().int().min(0).max(1_000_000), rewardPerWinner: z.number().int().min(0).max(1_000_000), prizeRules: z.array(z.object({ rank: z.number().int().min(1).max(100), sharePercent: z.number().int().min(1).max(100) })),
+  questions: z.array(questionSchema).min(1).max(100),
+}).superRefine((value, context) => {
+  const ranks = value.prizeRules.map((rule) => rule.rank);
+  if (new Set(ranks).size !== ranks.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ['prizeRules'], message: 'Each prize rank must be unique.' });
+  if (ranks.some((rank, index) => rank !== index + 1)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['prizeRules'], message: 'Prize ranks must be consecutive starting at first place.' });
+  const share = value.prizeRules.reduce((sum, rule) => sum + rule.sharePercent, 0);
+  if (value.quizType === 'special_event' && value.creatorFundedPrize > 0 && share !== 100) context.addIssue({ code: z.ZodIssueCode.custom, path: ['prizeRules'], message: 'Prize shares must add up to 100%.' });
+  if (value.creatorFundedPrize === 0 && value.prizeRules.length > 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ['creatorFundedPrize'], message: 'Add a QCoin prize pool or remove prize ranks.' });
+  if (value.quizType === 'general' && (value.startsAt || value.closesAt)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['quizType'], message: 'General quizzes do not have a start or close time.' });
+  if (value.quizType === 'special_event' && (!value.startsAt || !value.closesAt)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['startsAt'], message: 'Special Event quizzes need both start and close times.' });
+  if (value.quizType === 'special_event' && value.startsAt && new Date(value.startsAt).getTime() <= Date.now()) context.addIssue({ code: z.ZodIssueCode.custom, path: ['startsAt'], message: 'Event start time must be in the future.' });
+  if (value.quizType === 'special_event' && value.startsAt && value.closesAt && new Date(value.closesAt) <= new Date(value.startsAt)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['closesAt'], message: 'Quiz closing time must be after its start time.' });
+  if (value.quizType === 'general' && value.prizeRules.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ['prizeRules'], message: 'General quizzes use fixed rewards per passing participant.' });
+  if (value.quizType === 'general' && value.creatorFundedPrize > 0 && value.rewardPerWinner < 1) context.addIssue({ code: z.ZodIssueCode.custom, path: ['rewardPerWinner'], message: 'Set a reward for each passing participant.' });
+  if (value.quizType === 'general' && value.creatorFundedPrize > 0 && value.rewardPerWinner > value.creatorFundedPrize) context.addIssue({ code: z.ZodIssueCode.custom, path: ['rewardPerWinner'], message: 'Per-participant reward cannot exceed the prize pool.' });
+  if (value.quizType === 'general' && value.creatorFundedPrize === 0 && value.rewardPerWinner > 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ['creatorFundedPrize'], message: 'Set a prize pool before configuring rewards.' });
+  if (value.quizType === 'special_event' && value.rewardPerWinner > 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ['rewardPerWinner'], message: 'Special Event quizzes use rank-based prize shares.' });
+  if (value.closesAt && new Date(value.closesAt).getTime() <= Date.now()) context.addIssue({ code: z.ZodIssueCode.custom, path: ['closesAt'], message: 'Quiz closing time must be in the future.' });
 });
 const blankOption = (text: string) => ({ key: crypto.randomUUID(), text });
+const sampleQuestionsJson = JSON.stringify([
+  {
+    type: 'single_choice',
+    prompt: 'What is the brain of a computer?',
+    options: ['CPU', 'Motherboard', 'RAM'],
+    correctAnswer: 'CPU',
+    points: 1,
+  },
+  {
+    type: 'multiple_choice',
+    prompt: 'Which of these are input devices?',
+    options: ['Keyboard', 'Mouse', 'Monitor'],
+    correctAnswers: ['Keyboard', 'Mouse'],
+    points: 2,
+  },
+], null, 2);
 function blankQuestion(): QuizQuestion {
   const options = [blankOption(''), blankOption('')];
   return { type: 'single_choice', prompt: '', options, correctAnswers: [options[0].key], explanation: '', hint: '', points: 1 };
 }
 
-type FeeDetails = { fee: number; freeQuestionLimit: number; additionalQuestionFee: number; totalQuestions: number };
-type Rules = { freeQuizQuestionLimit: number; additionalQuestionFee: number; maxQuizQuestions: number; maxQuizEntryFee: number };
+function normalizeImportedQuestion(value: unknown, index: number): QuizQuestion {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Question ${index + 1} must be a JSON object.`);
+  }
+  const source = value as Record<string, unknown>;
+  const rawAnswers = source.correctAnswers
+    ?? source.correctAnswer
+    ?? source.answer
+    ?? source.answerKey
+    ?? source.correct_option
+    ?? source.correct_option_text;
+  const answerValues = Array.isArray(rawAnswers) ? rawAnswers : rawAnswers == null ? [] : [rawAnswers];
+  const typeName = String(source.type ?? (answerValues.length > 1 ? 'multiple_choice' : 'single_choice'))
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  const typeAliases: Record<string, QuizQuestion['type']> = {
+    single: 'single_choice',
+    single_choice: 'single_choice',
+    multiple: 'multiple_choice',
+    multiple_choice: 'multiple_choice',
+    true_false: 'true_false',
+    fill_in_the_blank: 'fill_blank',
+    fill_blank: 'fill_blank',
+    short_answer: 'short_answer',
+  };
+  const questionType = typeAliases[typeName];
+  if (!questionType) {
+    throw new Error(`Question ${index + 1} has an unsupported type.`);
+  }
+  const rawOptions = source.options ?? (questionType === 'true_false' ? ['True', 'False'] : []);
+  if (!Array.isArray(rawOptions)) throw new Error(`Question ${index + 1} options must be an array.`);
+
+  const options = rawOptions.map((option, optionIndex) => {
+    if (typeof option === 'string') return { key: `option-${optionIndex + 1}`, text: option };
+    if (option && typeof option === 'object' && !Array.isArray(option)) {
+      const item = option as Record<string, unknown>;
+      return {
+        key: typeof item.key === 'string' && item.key.trim()
+          ? item.key.trim()
+          : typeof item.id === 'string' && item.id.trim()
+            ? item.id.trim()
+            : `option-${optionIndex + 1}`,
+        text: item.text ?? item.label ?? item.value,
+        isCorrect: item.isCorrect === true || item.correct === true,
+      };
+    }
+    throw new Error(`Question ${index + 1}, option ${optionIndex + 1} must be text or an object with text/label.`);
+  });
+
+  const correctAnswers = (answerValues.length
+    ? answerValues
+    : options.filter((option) => 'isCorrect' in option && option.isCorrect).map((option) => option.key)
+  ).map((answer) => {
+    if (typeof answer !== 'string') return answer as string;
+    const matchedOption = options.find((option) =>
+      option.key === answer
+      || (typeof option.text === 'string' && option.text.trim().toLowerCase() === answer.trim().toLowerCase())
+    );
+    if (matchedOption) return matchedOption.key;
+    const letterIndex = /^[a-h]$/i.test(answer) ? answer.toUpperCase().charCodeAt(0) - 65 : -1;
+    return letterIndex >= 0 && options[letterIndex] ? options[letterIndex].key : answer;
+  });
+
+  const parsed = questionSchema.safeParse({
+    type: questionType,
+    prompt: source.prompt ?? source.question ?? source.questionText,
+    options: questionType === 'fill_blank' || questionType === 'short_answer'
+      ? []
+      : options.map(({ key, text }) => ({ key, text })),
+    correctAnswers,
+    explanation: source.explanation ?? '',
+    hint: source.hint ?? '',
+    points: source.points ?? 1,
+  });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(`Question ${index + 1}${issue.path.length ? ` (${issue.path.join('.')})` : ''}: ${issue.message}`);
+  }
+  return parsed.data;
+}
+
+type Rules = { freeQuizQuestionLimit: number; specialEventRequiresCreatePass: boolean; maxQuizQuestions: number; passProducts: PassProduct[] };
+type PassInventory = { items: Array<PassProduct & { balance: number }> };
+
+function toDateTimeLocal(value?: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
 
 export default function QuizEditorPage() {
   const { id } = useParams();
   const isEditing = Boolean(id);
   const navigate = useNavigate();
+  const client = useQueryClient();
   const { toast } = useToast();
   const { user } = useAuth();
   const requestKey = useRef(crypto.randomUUID());
   const actionRef = useRef<'save' | 'submit'>('save');
-  const [feePrompt, setFeePrompt] = useState<FeeDetails | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [submitError, setSubmitError] = useState('');
-  const form = useForm<QuizValues>({ resolver: zodResolver(quizSchema), defaultValues: { title: '', description: '', categoryId: null, tags: [], difficulty: 'beginner', language: 'en', coverImageUrl: null, timeLimitSeconds: null, passingScorePercent: 60, entryFee: 0, questions: [blankQuestion()] } });
+  const [importJson, setImportJson] = useState('');
+  const [importError, setImportError] = useState('');
+  const form = useForm<QuizValues>({ resolver: zodResolver(quizSchema), defaultValues: { title: '', description: '', categoryId: null, tags: [], quizType: 'general', difficulty: 'beginner', language: 'en', coverImageUrl: null, timeLimitSeconds: 600, startsAt: null, closesAt: null, passingScorePercent: 60, requiredPassKey: null, creatorFundedPrize: 0, rewardPerWinner: 0, prizeRules: [], questions: [blankQuestion()] } });
   const questionArray = useFieldArray({ control: form.control, name: 'questions' });
   const questions = form.watch('questions');
   const categories = useQuery({ queryKey: ['categories'], queryFn: () => getData<{ items: Category[] }>('/explore/categories').then((result) => result.items.filter((category) => category.contentType === 'quiz' || category.contentType === 'both')) });
   const rules = useQuery({ queryKey: ['platform-rules'], queryFn: () => getData<Rules>('/platform/rules') });
+  const passes = useQuery({ queryKey: ['passes'], queryFn: () => getData<PassInventory>('/passes') });
   const draft = useQuery({ queryKey: ['creator-quiz', id], enabled: Boolean(id), queryFn: () => getData<{ item: any; questions: QuizQuestion[] }>(`/creator/quizzes/${id}`) });
 
   useEffect(() => {
     if (draft.data) {
       const item = draft.data.item;
-      form.reset({ title: item.title, description: item.description ?? '', categoryId: item.categoryId ? String(item.categoryId) : null, tags: item.tags ?? [], difficulty: item.difficulty ?? 'beginner', language: item.language ?? 'en', coverImageUrl: item.coverImageUrl ?? null, timeLimitSeconds: item.timeLimitSeconds ?? null, passingScorePercent: item.passingScorePercent ?? 60, entryFee: item.entryFee ?? 0, questions: draft.data.questions.length ? draft.data.questions : [blankQuestion()] });
+      form.reset({ title: item.title, description: item.description ?? '', categoryId: item.categoryId ? String(item.categoryId) : null, tags: item.tags ?? [], quizType: item.quizType ?? (item.closesAt ? 'special_event' : 'general'), difficulty: item.difficulty ?? 'beginner', language: item.language ?? 'en', coverImageUrl: item.coverImageUrl ?? null, timeLimitSeconds: item.timeLimitSeconds ?? null, startsAt: item.startsAt ?? null, closesAt: item.closesAt ?? null, passingScorePercent: item.passingScorePercent ?? 60, requiredPassKey: item.requiredPassKey ?? null, creatorFundedPrize: item.creatorFundedPrize ?? 0, rewardPerWinner: item.rewardPerWinner ?? 0, prizeRules: item.prizeRules ?? [], questions: draft.data.questions.length ? draft.data.questions : [blankQuestion()] });
     }
   }, [draft.data, form]);
 
   const pricing = rules.data;
-  const projectedFee = useMemo(() => pricing ? Math.max(0, (questions?.length ?? 0) - pricing.freeQuizQuestionLimit) * pricing.additionalQuestionFee : 0, [pricing, questions?.length]);
+  const createPass = passes.data?.items.find((pass) => pass.key === 'create');
+  const quizType = form.watch('quizType');
+  const needsCreatePass = Boolean(pricing && ((questions?.length ?? 0) > pricing.freeQuizQuestionLimit || (quizType === 'special_event' && pricing.specialEventRequiresCreatePass)));
+  const createPassAlreadyUsed = Boolean(draft.data?.item?.createPassConsumed);
+  const createPassBalance = createPass?.balance ?? 0;
   const locked = isEditing && draft.data && !['draft', 'changes_requested', 'rejected'].includes(draft.data.item.status);
   const isLoading = (isEditing && draft.isLoading) || rules.isLoading;
 
-  async function persist(values: QuizValues, confirmFee = false) {
+  async function persist(values: QuizValues) {
     setSubmitError('');
-    setFeePrompt(null);
     const payload = { ...values, categoryId: values.categoryId || null, tags: values.tags.filter(Boolean), coverImageUrl: values.coverImageUrl || null };
     try {
-      const headers = !isEditing ? { 'Idempotency-Key': requestKey.current, ...(confirmFee ? { 'X-Confirm-QCoin-Fee': 'true' } : {}) } : undefined;
+      const headers = !isEditing ? { 'Idempotency-Key': requestKey.current } : undefined;
       const saved = isEditing ? await putData<{ item: { id: string } }>(`/creator/quizzes/${id}`, payload, headers) : await postData<{ item: { id: string } }>('/creator/quizzes', payload, headers);
       const contentId = saved.item.id;
       if (actionRef.current === 'submit') {
         await postData(`/creator/quizzes/${contentId}/submit`);
         toast('Quiz submitted for administrator review.');
       } else toast('Quiz draft saved.');
+      await Promise.all([client.invalidateQueries({ queryKey: ['passes'] }), client.invalidateQueries({ queryKey: ['auth', 'me'] })]);
       navigate('/app/creator-studio');
     } catch (error) {
-      if (apiErrorCode(error) === 'FEE_CONFIRMATION_REQUIRED') {
-        setFeePrompt(apiErrorDetails(error) as FeeDetails);
-        return;
-      }
       setSubmitError(apiErrorMessage(error));
     }
   }
-  const saveAction = (action: 'save' | 'submit', confirm = false) => {
+  const saveAction = (action: 'save' | 'submit') => {
     actionRef.current = action;
-    void form.handleSubmit((values) => persist(values, confirm))();
+    void form.handleSubmit((values) => persist(values))();
+  };
+  const loadQuestionsFile = async (file?: File) => {
+    if (!file) return;
+    setImportError('');
+    try {
+      const contents = await file.text();
+      setImportJson(contents);
+      importQuestions(false, contents);
+    } catch {
+      setImportError('Could not read this file. Select a valid JSON file and try again.');
+    }
+  };
+  const importQuestions = (replaceExisting: boolean, jsonText = importJson) => {
+    setImportError('');
+    try {
+      const input: unknown = JSON.parse(jsonText);
+      const rawQuestions = Array.isArray(input)
+        ? input
+        : input && typeof input === 'object' && 'questions' in input
+          ? (input as { questions: unknown }).questions
+          : [input];
+      if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
+        throw new Error('Provide a question object, a non-empty question array, or an object with a questions array.');
+      }
+      const imported = rawQuestions.map((question, index) => normalizeImportedQuestion(question, index));
+      const currentQuestions = form.getValues('questions');
+      const hasOnlyBlankStarter = currentQuestions.length === 1
+        && !currentQuestions[0].prompt.trim()
+        && currentQuestions[0].options.every((option) => !option.text.trim())
+        && !currentQuestions[0].explanation.trim()
+        && !currentQuestions[0].hint.trim();
+      const total = replaceExisting || hasOnlyBlankStarter ? imported.length : currentQuestions.length + imported.length;
+      const maxQuestions = Math.min(pricing?.maxQuizQuestions ?? 100, 100);
+      if (total > maxQuestions) {
+        throw new Error(`This quiz can have at most ${maxQuestions} questions. Importing these would make ${total}.`);
+      }
+      if (replaceExisting || hasOnlyBlankStarter) questionArray.replace(imported);
+      else questionArray.append(imported);
+      form.clearErrors('questions');
+      setImportJson('');
+      toast(`${imported.length} question${imported.length === 1 ? '' : 's'} ${replaceExisting ? 'imported' : 'added'}.`);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'Could not import this JSON.');
+    }
   };
 
   if (isLoading) return <div className="page-container"><PageSkeleton /></div>;
@@ -111,6 +284,16 @@ export default function QuizEditorPage() {
         <Card className="p-5 sm:p-6"><SectionTitle title="Quiz details" step="01" /><div className="mt-5 grid gap-4 sm:grid-cols-2">
           <Field label="Quiz title" error={form.formState.errors.title?.message} className="sm:col-span-2"><TextInput {...form.register('title')} placeholder="A clear, inviting title" /></Field>
           <Field label="Description" error={form.formState.errors.description?.message} className="sm:col-span-2"><TextArea {...form.register('description')} placeholder="What will participants learn or explore?" className="min-h-[100px]" /></Field>
+          <Field label="Quiz format" hint={quizType === 'general' ? 'Always available; no event start or closing date.' : 'Scheduled event with rankings finalized after it closes.'}>
+            <SelectInput value={quizType} onChange={(event) => {
+              const nextType = event.target.value as QuizValues['quizType'];
+              form.setValue('quizType', nextType, { shouldDirty: true });
+              form.setValue('startsAt', null, { shouldDirty: true });
+              form.setValue('closesAt', null, { shouldDirty: true });
+              form.setValue('rewardPerWinner', 0, { shouldDirty: true });
+              form.setValue('prizeRules', [], { shouldDirty: true });
+            }}><option value="general">General Quiz</option><option value="special_event">Special Event Quiz</option></SelectInput>
+          </Field>
           <Field label="Category"><SelectInput {...form.register('categoryId')}><option value="">Choose a category</option>{categories.data?.map((category) => <option key={category.id ?? category._id} value={category.id ?? category._id}>{category.name}</option>)}</SelectInput></Field>
           <Field label="Difficulty"><SelectInput {...form.register('difficulty')}><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></SelectInput></Field>
           <Field label="Language"><TextInput {...form.register('language')} placeholder="en" /></Field>
@@ -118,18 +301,75 @@ export default function QuizEditorPage() {
         </div></Card>
 
         <Card className="p-5 sm:p-6"><div className="flex items-center justify-between"><SectionTitle title="Questions" step="02" /><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500">{questionArray.fields.length} added</span></div>
+          <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4">
+            <Field label="Import multiple questions from JSON" hint='Paste a JSON array of question objects, or an object with a "questions" array. Each item needs question/prompt, options, and answer/correctAnswers.'>
+              <TextArea value={importJson} onChange={(event) => { setImportJson(event.target.value); setImportError(''); }} placeholder="Paste your JSON here, or load an example below." className="mt-2 min-h-[150px] bg-white font-mono text-xs" />
+            </Field>
+            <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+              <Upload size={14} />Choose a .json file
+              <input type="file" accept=".json,application/json" className="sr-only" onChange={(event) => { void loadQuestionsFile(event.target.files?.[0]); event.target.value = ''; }} />
+            </label>
+            {importError && <p role="alert" className="mt-2 text-xs text-rose-600">{importError}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={() => { setImportJson(sampleQuestionsJson); setImportError(''); }}>Load array example</Button>
+              <Button type="button" size="sm" onClick={() => importQuestions(false)} disabled={!importJson.trim()}><Upload size={14} />Add imported questions</Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => importQuestions(true)} disabled={!importJson.trim()}>Replace current questions</Button>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">Choosing a .json file imports it immediately. Pasted JSON is imported when you click Add. A blank starter question is replaced automatically.</p>
+          </div>
           <div className="mt-5 space-y-4">{questionArray.fields.map((field, index) => <QuestionPanel key={field.id} index={index} form={form} total={questionArray.fields.length} move={questionArray.move} remove={questionArray.remove} insert={questionArray.insert} />)}</div>
           {form.formState.errors.questions?.message && <p className="mt-3 text-xs text-rose-600">{form.formState.errors.questions.message}</p>}
           <Button type="button" variant="outline" className="mt-4 w-full border-dashed" onClick={() => questionArray.append(blankQuestion())} disabled={questionArray.fields.length >= (pricing?.maxQuizQuestions ?? 100)}><Plus size={15} />Add a question</Button>
-          {pricing && <p className="mt-3 text-[11px] leading-5 text-slate-400">Up to {pricing.freeQuizQuestionLimit} questions are free under the current platform policy. This quiz’s current estimated premium question fee is <strong className="text-slate-600">{projectedFee} QCoins</strong>.</p>}
+          {pricing && <p className="mt-3 text-[11px] leading-5 text-slate-400">Up to {pricing.freeQuizQuestionLimit} questions are free. Larger quizzes use one Create Pass. Special Events may also require one, based on the admin setting.</p>}
         </Card>
       </div>
       <aside className="space-y-5">
         <Card className="p-5"><SectionTitle title="Participation" step="03" /><div className="mt-5 space-y-4">
-          <Field label="Time limit (minutes)" hint="Leave blank for no time limit."><TextInput type="number" min="0.5" max="120" step="0.5" placeholder="No limit" value={form.watch('timeLimitSeconds') ? form.watch('timeLimitSeconds')! / 60 : ''} onChange={(event) => form.setValue('timeLimitSeconds', event.target.value ? Math.round(Number(event.target.value) * 60) : null, { shouldDirty: true })} /></Field>
+          <Field label="Time limit (minutes)" hint="New quizzes default to 10 minutes. Clear the field for no limit."><TextInput type="number" min="0.5" max="120" step="0.5" placeholder="No limit" value={form.watch('timeLimitSeconds') ? form.watch('timeLimitSeconds')! / 60 : ''} onChange={(event) => form.setValue('timeLimitSeconds', event.target.value ? Math.round(Number(event.target.value) * 60) : null, { shouldDirty: true })} /></Field>
+          {quizType === 'special_event' && <>
+            <Field label="Event starts at" error={form.formState.errors.startsAt?.message}><TextInput type="datetime-local" value={toDateTimeLocal(form.watch('startsAt'))} onChange={(event) => form.setValue('startsAt', event.target.value ? new Date(event.target.value).toISOString() : null, { shouldDirty: true })} /></Field>
+            <Field label="Event closes at" hint="Attempts and final ranking close at this time." error={form.formState.errors.closesAt?.message}><TextInput type="datetime-local" value={toDateTimeLocal(form.watch('closesAt'))} onChange={(event) => form.setValue('closesAt', event.target.value ? new Date(event.target.value).toISOString() : null, { shouldDirty: true })} /></Field>
+          </>}
           <Field label="Passing score" error={form.formState.errors.passingScorePercent?.message}><div className="relative"><TextInput type="number" min="0" max="100" {...form.register('passingScorePercent', { valueAsNumber: true })} className="pr-10" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">%</span></div></Field>
-          <Field label="Quiz entry fee" hint={pricing ? `Maximum ${pricing.maxQuizEntryFee} QCoins. Participants see this before starting.` : 'Participants see the fee before starting.'}><div className="relative"><TextInput type="number" min="0" max={pricing?.maxQuizEntryFee} {...form.register('entryFee', { valueAsNumber: true })} className="pr-16" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">QCoins</span></div></Field>
+          <Field label="Required participation pass" hint="Participants transfer one owned pass of this type to you when they start an attempt.">
+            <SelectInput value={form.watch('requiredPassKey') ?? ''} onChange={(event) => form.setValue('requiredPassKey', event.target.value || null, { shouldDirty: true })}>
+              <option value="">No pass required</option>
+              {pricing?.passProducts.filter((pass) => pass.kind === 'participation' && pass.active && pass.price > 0).map((pass) => <option key={pass.key} value={pass.key}>{pass.name} · {pass.price} QCoins</option>)}
+            </SelectInput>
+          </Field>
         </div></Card>
+        <Card className="p-5"><SectionTitle title="QCoin prize" step="04" />
+          <div className="mt-4 space-y-4">
+            <Field label={quizType === 'general' ? 'Maximum reward pool' : 'Creator-funded prize pool'} hint="This amount is reserved from your wallet when the approved quiz is published." error={form.formState.errors.creatorFundedPrize?.message}>
+              <div className="relative"><TextInput type="number" min="0" {...form.register('creatorFundedPrize', { valueAsNumber: true })} className="pr-16" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">QCoins</span></div>
+            </Field>
+            {quizType === 'general' && form.watch('creatorFundedPrize') > 0 && <Field label="Fixed reward per passing participant" hint="Paid immediately from the reserved pool; rewards stop when the pool cannot cover the full amount." error={form.formState.errors.rewardPerWinner?.message}>
+              <div className="relative"><TextInput type="number" min="1" {...form.register('rewardPerWinner', { valueAsNumber: true })} className="pr-16" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">QCoins</span></div>
+            </Field>}
+            {quizType === 'special_event' && form.watch('creatorFundedPrize') > 0 && <div className="space-y-3">
+              <div className="flex items-center justify-between"><p className="text-xs font-semibold text-slate-600">Prize rank shares</p><p className="text-[10px] text-slate-400">{form.watch('prizeRules').reduce((sum, rule) => sum + (Number(rule.sharePercent) || 0), 0)}% / 100%</p></div>
+              {form.watch('prizeRules').map((rule, index) => <div key={rule.rank} className="flex items-end gap-2">
+                <Field label={`Rank ${rule.rank}`} className="flex-1">
+                  <TextInput disabled value={`Place ${rule.rank}`} />
+                </Field>
+                <Field label="Share (%)" className="w-24">
+                  <TextInput type="number" min="1" max="100" {...form.register(`prizeRules.${index}.sharePercent`, { valueAsNumber: true })} />
+                </Field>
+                <Button type="button" size="sm" variant="ghost" aria-label={`Remove rank ${rule.rank}`} onClick={() => form.setValue('prizeRules', form.getValues('prizeRules').filter((_, i) => i !== index).map((entry, i) => ({ ...entry, rank: i + 1 })), { shouldDirty: true })}><X size={15} /></Button>
+              </div>)}
+              <Button type="button" size="sm" variant="outline" disabled={form.watch('prizeRules').length >= 5} onClick={() => form.setValue('prizeRules', [...form.getValues('prizeRules'), { rank: form.getValues('prizeRules').length + 1, sharePercent: 10 }], { shouldDirty: true })}><Plus size={14} />Add rank</Button>
+              {form.formState.errors.prizeRules?.message && <p className="text-xs text-rose-600">{form.formState.errors.prizeRules.message}</p>}
+            </div>}
+            {form.watch('creatorFundedPrize') > (user?.walletBalance ?? 0) && <p className="text-xs text-rose-600">Your wallet balance is below the configured prize. Add QCoins before publishing.</p>}
+          </div>
+        </Card>
+        {needsCreatePass && !createPassAlreadyUsed && <Card className="border-amber-200 bg-amber-50/70 p-4">
+          <h3 className="text-xs font-bold text-amber-900">Create Pass required</h3>
+          <p className="mt-1 text-xs leading-5 text-amber-800">This quiz is over the free question limit or is a Special Event that requires a Creator Pass. One pass covers the whole quiz.</p>
+          <p className="mt-2 text-xs font-semibold text-amber-900">Available: {createPassBalance} · Price: {createPass?.price ?? 0} QCoins</p>
+          {createPassBalance === 0 && <Link to="/app/wallet" className="mt-2 inline-block text-xs font-bold text-brand-700">Buy a Create Pass in your wallet</Link>}
+        </Card>}
+        {passes.isError && <p role="alert" className="text-xs text-rose-600">Pass balances could not be loaded: {apiErrorMessage(passes.error)}</p>}
         <Card className="p-5"><div className="flex items-start gap-2.5"><CircleHelpIcon /><div><h3 className="text-xs font-bold text-ink">Review checklist</h3><p className="mt-1.5 text-xs leading-5 text-slate-500">Make sure every question has a valid answer key. Your correct answers stay private and are only returned to the creator and eligible result view.</p></div></div></Card>
         <div className="space-y-2.5">
           {submitError && <p className="rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-xs text-rose-700">{submitError}</p>}
@@ -142,9 +382,6 @@ export default function QuizEditorPage() {
     <Modal open={previewOpen} onClose={() => setPreviewOpen(false)} title="Private quiz preview" footer={<Button onClick={() => setPreviewOpen(false)}>Close preview</Button>}>
       <p className="mb-4 text-xs leading-5 text-slate-500">Only you can see this preview. Correct options are marked for creator review.</p>
       <div className="max-h-[55vh] space-y-4 overflow-y-auto">{questions?.map((question, index) => <div key={`${index}-${question.prompt}`} className="rounded-xl border border-slate-200 p-4"><p className="text-xs font-semibold text-slate-400">Question {index + 1} · {question.points} pt</p><p className="mt-2 text-sm font-semibold text-ink">{question.prompt || 'Your question prompt'}</p><div className="mt-3 space-y-2">{question.options.map((option) => <div key={option.key} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs ${question.correctAnswers.includes(option.key) ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-600'}`}>{question.correctAnswers.includes(option.key) && <Check size={13} />}{option.text || 'Answer option'}</div>)}</div>{(question.type === 'fill_blank' || question.type === 'short_answer') && <p className="mt-2 text-xs text-emerald-700">Accepted answers: {question.correctAnswers.join(', ') || 'Not set'}</p>}</div>)}</div>
-    </Modal>
-    <Modal open={Boolean(feePrompt)} onClose={() => setFeePrompt(null)} title="Confirm creation fee" footer={<><Button variant="outline" onClick={() => setFeePrompt(null)}>Go back</Button><Button disabled={(user?.walletBalance ?? 0) < (feePrompt?.fee ?? 0)} onClick={() => saveAction(actionRef.current, true)}>Confirm {feePrompt?.fee ?? 0} QCoins</Button></>}>
-      {feePrompt && <><p className="text-sm leading-6 text-slate-600">The current platform policy includes a premium fee for questions beyond the free limit. This charge is calculated and applied by the server.</p><div className="mt-4 space-y-2 rounded-xl bg-slate-50 p-4 text-xs"><FeeLine label="Questions" value={String(feePrompt.totalQuestions)} /><FeeLine label="Included free" value={String(feePrompt.freeQuestionLimit)} /><FeeLine label="Additional question rate" value={`${feePrompt.additionalQuestionFee} QCoins`} /><div className="my-1 border-t border-slate-200" /><FeeLine label="Total due now" value={`${feePrompt.fee} QCoins`} bold /></div>{(user?.walletBalance ?? 0) < feePrompt.fee && <p className="mt-3 text-xs font-medium text-rose-600">Your current wallet balance is too low to confirm this fee.</p>}</>}
     </Modal>
   </div>;
 }
@@ -192,4 +429,3 @@ function QuestionPanel({ index, form, total, move, remove, insert }: { index: nu
 
 function SectionTitle({ title, step }: { title: string; step: string }) { return <div className="flex items-center gap-2.5"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-50 text-[11px] font-bold text-brand-700">{step}</span><h2 className="text-sm font-bold text-ink">{title}</h2></div>; }
 function CircleHelpIcon() { return <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600"><CircleHelp size={16} /></div>; }
-function FeeLine({ label, value, bold = false }: { label: string; value: string; bold?: boolean }) { return <div className={`flex justify-between ${bold ? 'text-sm font-bold text-ink' : 'text-slate-500'}`}><span>{label}</span><span>{value}</span></div>; }

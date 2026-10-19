@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import DashboardLayout from './layouts/DashboardLayout';
-import { PageSkeleton } from './components/ui';
+import { Button, Card, EmptyState, PageSkeleton } from './components/ui';
 
 const LandingPage = lazy(() => import('./pages/LandingPage'));
 const AuthPage = lazy(() => import('./pages/AuthPage'));
@@ -29,9 +29,12 @@ const AdminPlatformPage = lazy(() => import('./pages/admin/AdminPlatformPage'));
 const AdminLedgerPage = lazy(() => import('./pages/admin/AdminLedgerPage'));
 
 function Guard({ children, admin = false }: { children: JSX.Element; admin?: boolean }) {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, authCheckError, authCheckStatus, retryAuthCheck } = useAuth();
   const location = useLocation();
   if (isLoading) return <div className="min-h-screen bg-canvas p-6"><PageSkeleton /></div>;
+  if (!user && authCheckError && authCheckStatus !== 401) {
+    return <div className="page-container"><Card><EmptyState title="Could not verify your session" description={`${authCheckError} Your login may still be active; retry before signing in again.`} action={<Button variant="outline" onClick={() => void retryAuthCheck()}>Retry session check</Button>} /></Card></div>;
+  }
   if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
   if (admin && user.role !== 'admin') return <Navigate to="/app/overview" replace />;
   return children;

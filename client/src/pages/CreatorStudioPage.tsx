@@ -27,7 +27,11 @@ export default function CreatorStudioPage() {
     try {
       await postData(`/creator/${item.type}/${item.id}/publish`);
       toast('Your content is now published.');
-      await client.invalidateQueries({ queryKey: ['creator-content'] });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['creator-content'] }),
+        client.invalidateQueries({ queryKey: ['auth', 'me'] }),
+        client.invalidateQueries({ queryKey: ['wallet'] }),
+      ]);
     } catch (error) { toast(apiErrorMessage(error), 'error'); }
   }
 

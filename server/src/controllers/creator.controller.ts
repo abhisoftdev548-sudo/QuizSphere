@@ -8,10 +8,13 @@ import { Poll } from '../models/Poll.js';
 import { PollVote } from '../models/PollVote.js';
 import { Quiz, QuizVersion } from '../models/Quiz.js';
 import { QuizAttempt } from '../models/QuizAttempt.js';
-import { applyLedgerEntry } from '../services/wallet.service.js';
-import { runInTransaction } from '../services/transaction.service.js';
+import { QuizPrizePool } from '../models/PrizePool.js';
+import { applyLedgerEntry, consumePass } from '../services/wallet.service.js';
+import { isDuplicateKey, runInTransaction } from '../services/transaction.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendData, pageNumber } from '../utils/http.js';
+import { passProductsOrDefault } from '../constants/passes.js';
+import { requiresCreatePass } from '../services/quizPolicy.service.js';
 
 function ownerId(req: Request): string { return req.auth!.userId; }
 function requestKey(req: Request): string {
@@ -26,10 +29,8 @@ async function categoryExists(id: string | null | undefined, type: 'quiz' | 'pol
 }
 async function getConfig() {
   const stored = await PlatformConfig.findById('global').lean();
-  return { freeQuizQuestionLimit: stored?.freeQuizQuestionLimit ?? 10, additionalQuestionFee: stored?.additionalQuestionFee ?? 0, maxQuizQuestions: stored?.maxQuizQuestions ?? 50, maxQuizEntryFee: stored?.maxQuizEntryFee ?? 500, maxPollVoteFee: stored?.maxPollVoteFee ?? 100 };
+  return { freeQuizQuestionLimit: stored?.freeQuizQuestionLimit ?? 10, specialEventRequiresCreatePass: stored?.specialEventRequiresCreatePass ?? true, maxQuizQuestions: stored?.maxQuizQuestions ?? 50, maxQuizEntryFee: stored?.maxQuizEntryFee ?? 500, maxPollVoteFee: stored?.maxPollVoteFee ?? 100, passProducts: passProductsOrDefault(stored?.passProducts as any) };
 }
-function feeConfirmation(req: Request): boolean { return req.get('x-confirm-qcoin-fee') === 'true'; }
-
 export async function createQuiz(req: Request, res: Response): Promise<void> {
   const data = req.body as any;
   const key = requestKey(req);
@@ -37,8 +38,13 @@ export async function createQuiz(req: Request, res: Response): Promise<void> {
   if (data.questions.length > config.maxQuizQuestions) throw new ApiError(422, `This platform currently allows up to ${config.maxQuizQuestions} questions per quiz.`, 'QUESTION_LIMIT');
   if (data.entryFee > config.maxQuizEntryFee) throw new ApiError(422, `Quiz entry fees may not exceed ${config.maxQuizEntryFee} QCoins.`, 'ENTRY_FEE_LIMIT');
   await categoryExists(data.categoryId, 'quiz');
-  const fee = Math.max(0, data.questions.length - config.freeQuizQuestionLimit) * config.additionalQuestionFee;
-  if (fee > 0 && !feeConfirmation(req)) throw new ApiError(402, 'Confirm the QCoin creation fee before saving this quiz.', 'FEE_CONFIRMATION_REQUIRED', { fee, freeQuestionLimit: config.freeQuizQuestionLimit, additionalQuestionFee: config.additionalQuestionFee, totalQuestions: data.questions.length });
+  if (data.requiredPassKey && !config.passProducts.some((product) => product.key === data.requiredPassKey && product.kind === 'participation' && product.active && product.price > 0)) {
+    throw new ApiError(422, 'Choose an available participation pass.', 'INVALID_PASS');
+  }
+  const needsCreatePass = requiresCreatePass(data.questions.length, config.freeQuizQuestionLimit, data.quizType, config.specialEventRequiresCreatePass);
+  if (needsCreatePass && !config.passProducts.some((product) => product.key === 'create' && product.active)) {
+    throw new ApiError(409, 'Quiz creation passes are not currently available. Contact the platform administrator.', 'CREATE_PASS_UNAVAILABLE');
+  }
 
   const result = await runInTransaction(async (session) => {
     const existing = await Quiz.findOne({ creatorId: ownerId(req), creationKey: key }).session(session);
@@ -46,16 +52,13 @@ export async function createQuiz(req: Request, res: Response): Promise<void> {
       if (existing.title !== data.title) throw new ApiError(409, 'This Idempotency-Key was already used for another quiz.', 'IDEMPOTENCY_CONFLICT');
       return existing;
     }
-    const quiz = new Quiz({ ...data, categoryId: data.categoryId || null, creatorId: ownerId(req), creationKey: key, questionCount: data.questions.length, status: 'draft', version: 1 });
+    const quiz = new Quiz({ ...data, startsAt: data.startsAt ? new Date(data.startsAt) : null, closesAt: data.closesAt ? new Date(data.closesAt) : null, categoryId: data.categoryId || null, creatorId: ownerId(req), creationKey: key, questionCount: data.questions.length, status: 'draft', version: 1, createPassConsumed: needsCreatePass });
     await quiz.save({ session });
+    if (needsCreatePass) await consumePass(ownerId(req), 'create', session);
     const [version] = await QuizVersion.create([{ quizId: quiz._id, version: 1, questions: data.questions, createdBy: ownerId(req), note: 'Initial draft' }], { session });
     if (!version) throw new ApiError(500, 'Unable to create a quiz version.', 'QUIZ_VERSION_CREATE_FAILED');
     quiz.currentVersionId = version._id;
     await quiz.save({ session });
-    if (fee > 0) {
-      const entry = await applyLedgerEntry({ userId: ownerId(req), amount: -fee, type: 'creation_fee', idempotencyKey: `quiz-create:${ownerId(req)}:${key}`, description: `Premium question fee for “${quiz.title}”`, relatedType: 'quiz', relatedId: quiz._id }, session);
-      await Notification.create([{ userId: ownerId(req), type: 'qcoin_spent', title: 'Quiz creation fee paid', message: `${fee} QCoins were used to create “${quiz.title}”.`, link: '/creator-studio', relatedType: 'ledger', relatedId: entry._id }], { session });
-    }
     return quiz;
   });
   sendData(res, { item: serializeCreatorQuiz(result) }, 201);
@@ -67,14 +70,22 @@ export async function updateQuiz(req: Request, res: Response): Promise<void> {
   if (data.questions.length > config.maxQuizQuestions) throw new ApiError(422, `This platform currently allows up to ${config.maxQuizQuestions} questions per quiz.`, 'QUESTION_LIMIT');
   if (data.entryFee > config.maxQuizEntryFee) throw new ApiError(422, `Quiz entry fees may not exceed ${config.maxQuizEntryFee} QCoins.`, 'ENTRY_FEE_LIMIT');
   await categoryExists(data.categoryId, 'quiz');
+  if (data.requiredPassKey && !config.passProducts.some((product) => product.key === data.requiredPassKey && product.kind === 'participation' && product.active && product.price > 0)) {
+    throw new ApiError(422, 'Choose an available participation pass.', 'INVALID_PASS');
+  }
   const quiz = await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req) });
   if (!quiz) throw new ApiError(404, 'Quiz not found.', 'CONTENT_NOT_FOUND');
   if (!['draft', 'changes_requested', 'rejected'].includes(quiz.status)) throw new ApiError(409, 'This quiz cannot be edited in its current review or publication state.', 'CONTENT_NOT_EDITABLE');
   const nextVersion = quiz.version + 1;
+  const needsCreatePass = requiresCreatePass(data.questions.length, config.freeQuizQuestionLimit, data.quizType, config.specialEventRequiresCreatePass);
+  if (needsCreatePass && !quiz.createPassConsumed && !config.passProducts.some((product) => product.key === 'create' && product.active)) {
+    throw new ApiError(409, 'Quiz creation passes are not currently available. Contact the platform administrator.', 'CREATE_PASS_UNAVAILABLE');
+  }
   await runInTransaction(async (session) => {
+    if (needsCreatePass && !quiz.createPassConsumed) await consumePass(ownerId(req), 'create', session);
     const [version] = await QuizVersion.create([{ quizId: quiz._id, version: nextVersion, questions: data.questions, createdBy: ownerId(req), note: 'Creator revision' }], { session });
     if (!version) throw new ApiError(500, 'Unable to create a quiz revision.', 'QUIZ_VERSION_CREATE_FAILED');
-    await Quiz.updateOne({ _id: quiz._id, creatorId: ownerId(req), version: quiz.version }, { $set: { ...data, categoryId: data.categoryId || null, currentVersionId: version._id, questionCount: data.questions.length, version: nextVersion, status: quiz.status === 'rejected' ? 'draft' : quiz.status } }, { session });
+    await Quiz.updateOne({ _id: quiz._id, creatorId: ownerId(req), version: quiz.version }, { $set: { ...data, startsAt: data.startsAt ? new Date(data.startsAt) : null, closesAt: data.closesAt ? new Date(data.closesAt) : null, categoryId: data.categoryId || null, currentVersionId: version._id, questionCount: data.questions.length, version: nextVersion, createPassConsumed: quiz.createPassConsumed || needsCreatePass, status: quiz.status === 'rejected' ? 'draft' : quiz.status } }, { session });
   });
   const updated = await Quiz.findById(quiz._id);
   sendData(res, { item: serializeCreatorQuiz(updated) });
@@ -97,22 +108,30 @@ export async function createPoll(req: Request, res: Response): Promise<void> {
   const config = await getConfig();
   if (data.votingFee > config.maxPollVoteFee) throw new ApiError(422, `Poll voting fees may not exceed ${config.maxPollVoteFee} QCoins.`, 'VOTING_FEE_LIMIT');
   await categoryExists(data.categoryId, 'poll');
-  const result = await runInTransaction(async (session) => {
-    const existing = await Poll.findOne({ creatorId: ownerId(req), creationKey: key }).session(session);
-    if (existing) {
-      if (existing.title !== data.title) throw new ApiError(409, 'This Idempotency-Key was already used for another poll.', 'IDEMPOTENCY_CONFLICT');
-      return existing;
-    }
-    const poll = new Poll({
-      title: data.title, description: data.description, categoryId: data.categoryId || null, tags: data.tags,
-      options: data.options.map((text: string) => ({ text })), allowMultiple: data.allowMultiple,
-      anonymous: data.anonymous, resultVisibility: data.resultVisibility, allowVoteChange: data.allowVoteChange,
-      startsAt: data.startsAt ? new Date(data.startsAt) : null, closesAt: data.closesAt ? new Date(data.closesAt) : null,
-      votingFee: data.votingFee, creatorId: ownerId(req), creationKey: key, status: 'draft', version: 1,
-    });
-    await poll.save({ session });
-    return poll;
+  const creatorId = ownerId(req);
+  const existing = await Poll.findOne({ creatorId, creationKey: key });
+  if (existing) {
+    if (existing.title !== data.title) throw new ApiError(409, 'This Idempotency-Key was already used for another poll.', 'IDEMPOTENCY_CONFLICT');
+    sendData(res, { item: serializeCreatorPoll(existing) });
+    return;
+  }
+  const poll = new Poll({
+    title: data.title, description: data.description, categoryId: data.categoryId || null, tags: data.tags,
+    options: data.options.map((text: string) => ({ text })), allowMultiple: data.allowMultiple,
+    anonymous: data.anonymous, resultVisibility: data.resultVisibility, allowVoteChange: data.allowVoteChange,
+    startsAt: data.startsAt ? new Date(data.startsAt) : null, closesAt: data.closesAt ? new Date(data.closesAt) : null,
+    votingFee: data.votingFee, creatorId, creationKey: key, status: 'draft', version: 1,
   });
+  let result;
+  try {
+    result = await poll.save();
+  } catch (error) {
+    if (!isDuplicateKey(error)) throw error;
+    const duplicate = await Poll.findOne({ creatorId, creationKey: key });
+    if (!duplicate) throw error;
+    if (duplicate.title !== data.title) throw new ApiError(409, 'This Idempotency-Key was already used for another poll.', 'IDEMPOTENCY_CONFLICT');
+    result = duplicate;
+  }
   sendData(res, { item: serializeCreatorPoll(result) }, 201);
 }
 
@@ -154,6 +173,22 @@ export async function publishApproved(req: Request, res: Response): Promise<void
       ? await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req), status: 'approved' }).session(session)
       : await Poll.findOne({ _id: req.params.id, creatorId: ownerId(req), status: 'approved' }).session(session);
     if (!item) throw new ApiError(404, 'Approved content not found.', 'CONTENT_NOT_FOUND');
+    if (type === 'quiz' && item.creatorFundedPrize > 0) {
+      await applyLedgerEntry({
+        userId: ownerId(req),
+        amount: -item.creatorFundedPrize,
+        type: 'prize_funding',
+        idempotencyKey: `quiz-prize-funding:${item._id}`,
+        description: `Funded QCoin prize for “${item.title}”`,
+        relatedType: 'quiz',
+        relatedId: item._id,
+      }, session);
+      await QuizPrizePool.findOneAndUpdate(
+        { quizId: item._id },
+        { $setOnInsert: { quizId: item._id }, $inc: { fundedAmount: item.creatorFundedPrize } },
+        { upsert: true, new: true, session },
+      );
+    }
     item.status = 'published';
     item.publishedAt = new Date();
     await item.save({ session });
@@ -227,7 +262,7 @@ export async function creatorPollAnalytics(req: Request, res: Response): Promise
 
 function serializeCreatorQuiz(quiz: any) {
   if (!quiz) return null;
-  return { id: String(quiz._id), type: 'quiz', title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, categoryId: quiz.categoryId?._id ?? quiz.categoryId ?? null, difficulty: quiz.difficulty, tags: quiz.tags, status: quiz.status, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, prizeRules: quiz.prizeRules, reviewFeedback: quiz.reviewFeedback, version: quiz.version, updatedAt: quiz.updatedAt, createdAt: quiz.createdAt, publishedAt: quiz.publishedAt };
+  return { id: String(quiz._id), type: 'quiz', title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, categoryId: quiz.categoryId?._id ?? quiz.categoryId ?? null, quizType: quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general'), startsAt: quiz.startsAt ?? null, closesAt: quiz.closesAt, difficulty: quiz.difficulty, tags: quiz.tags, status: quiz.status, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, requiredPassKey: quiz.requiredPassKey ?? null, creatorFundedPrize: quiz.creatorFundedPrize ?? 0, rewardPerWinner: quiz.rewardPerWinner ?? 0, prizeRules: quiz.prizeRules ?? [], createPassConsumed: quiz.createPassConsumed ?? false, reviewFeedback: quiz.reviewFeedback, version: quiz.version, updatedAt: quiz.updatedAt, createdAt: quiz.createdAt, publishedAt: quiz.publishedAt };
 }
 function serializeCreatorPoll(poll: any) {
   if (!poll) return null;
