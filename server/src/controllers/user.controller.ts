@@ -9,9 +9,17 @@ import { User } from '../models/User.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendData, pageNumber } from '../utils/http.js';
 
+function currentMonthStart(): Date {
+  const date = new Date();
+  date.setUTCDate(1);
+  date.setUTCHours(0, 0, 0, 0);
+  return date;
+}
+
 export async function getOverview(req: Request, res: Response): Promise<void> {
   const userId = req.auth!.userId;
-  const [user, attempts, completed, publishedQuizzes, publishedPolls, pending, latestAttempts, latestNotifications] = await Promise.all([
+  const monthStart = currentMonthStart();
+  const [user, attempts, completed, publishedQuizzes, publishedPolls, pending, latestAttempts, latestNotifications, monthlyScores] = await Promise.all([
     User.findById(userId).select('walletBalance displayName'),
     QuizAttempt.countDocuments({ userId }),
     QuizAttempt.countDocuments({ userId, status: 'completed' }),
@@ -20,12 +28,18 @@ export async function getOverview(req: Request, res: Response): Promise<void> {
     Quiz.countDocuments({ creatorId: userId, status: { $in: ['pending_review', 'changes_requested'] } }).then((q) => Poll.countDocuments({ creatorId: userId, status: { $in: ['pending_review', 'changes_requested'] } }).then((p) => q + p)),
     QuizAttempt.find({ userId }).sort({ createdAt: -1 }).limit(4).populate('quizId', 'title').lean(),
     Notification.find({ userId }).sort({ createdAt: -1 }).limit(4).lean(),
+    QuizAttempt.aggregate([
+      { $match: { status: 'completed', submittedAt: { $gte: monthStart }, score: { $ne: null } } },
+      { $group: { _id: '$userId', attempts: { $sum: 1 }, averageScore: { $avg: '$score' }, bestScore: { $max: '$score' } } },
+    ]),
   ]);
   if (!user) throw new ApiError(404, 'Account not found.', 'ACCOUNT_NOT_FOUND');
   const averageScore = await QuizAttempt.aggregate([
     { $match: { userId: user._id, status: 'completed', score: { $ne: null } } },
     { $group: { _id: null, value: { $avg: '$score' } } },
   ]);
+  monthlyScores.sort((a, b) => b.averageScore - a.averageScore || b.attempts - a.attempts || b.bestScore - a.bestScore || String(a._id).localeCompare(String(b._id)));
+  const rankIndex = monthlyScores.findIndex((item) => String(item._id) === userId);
   const activity = [
     ...latestAttempts.map((item: any) => ({ id: String(item._id), type: 'attempt', title: item.quizId?.title ?? 'Quiz attempt', description: item.status === 'completed' ? `Scored ${Math.round(item.score ?? 0)}%` : 'Attempt in progress', createdAt: item.createdAt })),
     ...latestNotifications.map((item: any) => ({ id: String(item._id), type: 'notification', title: item.title, description: item.message, createdAt: item.createdAt })),
@@ -39,7 +53,7 @@ export async function getOverview(req: Request, res: Response): Promise<void> {
       averageScore: averageScore[0]?.value == null ? null : Math.round(averageScore[0].value),
       publishedCreations: publishedQuizzes + publishedPolls,
       pendingSubmissions: pending,
-      leaderboardRank: null,
+      leaderboardRank: rankIndex >= 0 ? rankIndex + 1 : null,
     },
     recentActivity: activity,
   });
