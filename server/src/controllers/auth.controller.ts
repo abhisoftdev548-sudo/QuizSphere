@@ -82,7 +82,7 @@ export async function login(req: Request, res: Response): Promise<void> {
 
 export async function refresh(req: Request, res: Response): Promise<void> {
   const rawToken = getRefreshToken(req);
-  if (!rawToken) { clearAuthCookies(res); throw new ApiError(401, 'Your session has expired. Please sign in again.', 'SESSION_EXPIRED'); }
+  if (!rawToken) throw new ApiError(401, 'Your session has expired. Please sign in again.', 'SESSION_EXPIRED');
   let claims;
   try { claims = verifyRefreshToken(rawToken); } catch {
     clearAuthCookies(res);

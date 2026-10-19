@@ -132,9 +132,9 @@ Tests cover deterministic score calculation and rank payouts, General/Special Ev
 
 - Build command from the repository root: `npm install && npm run build --workspace client`
 - Output directory: `client/dist`
-- Add a rewrite so client-side routes serve `index.html`.
-- Route `/api/*` to the Render API, or configure an equivalent same-origin proxy. If using a separate API origin, set `CLIENT_ORIGIN` to the exact client origin and verify cookie/CORS behavior in production.
-- For a separate API origin, set the Vercel `VITE_API_BASE_URL` to the full API URL ending in `/api/v1`; on the API set `CLIENT_ORIGIN` to the exact website origin and `COOKIE_SAME_SITE=none` (the production default; this automatically enables Secure cookies). Cookies require HTTPS and third-party-cookie blocking can prevent cross-site sessions, so a same-origin `/api` proxy is the most reliable deployment.
+- The repository `vercel.json` proxies `/api/*` to the Render API and sends client-side routes to `index.html`, keeping auth cookies same-origin with the website.
+- Do not set `VITE_API_BASE_URL` in Vercel when using this proxy; the client should use its default relative `/api/v1` URL.
+- On the API, set `CLIENT_ORIGIN` to the exact website origin. Leave `COOKIE_DOMAIN` unset so the proxied API cookies are scoped to the website host. Production defaults to `COOKIE_SAME_SITE=none` and automatically enables Secure cookies.
 
 ### MongoDB Atlas
 

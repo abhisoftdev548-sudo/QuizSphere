@@ -5,6 +5,7 @@ const baseURL = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '') || '/api/
 export const apiClient = axios.create({ baseURL, withCredentials: true, headers: { 'Content-Type': 'application/json' } });
 let refreshInFlight: Promise<unknown> | null = null;
 let csrfTokenInMemory: string | null = null;
+let authGeneration = 0;
 
 type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean; _csrfRetry?: boolean };
 type ApiErrorResponse = { error?: { code?: string } };
@@ -48,11 +49,12 @@ apiClient.interceptors.response.use((response) => response, async (error: AxiosE
   }
   if (error.response?.status === 401 && config && !config._retry && !url.includes('/auth/login') && !url.includes('/auth/register') && !url.includes('/auth/refresh') && !url.includes('/auth/logout')) {
     config._retry = true;
+    const generationAtRefreshStart = authGeneration;
     try {
       await refreshSession();
       return apiClient(config);
     } catch (refreshError) {
-      if (axios.isAxiosError(refreshError) && refreshError.response?.status === 401) {
+      if (authGeneration === generationAtRefreshStart && axios.isAxiosError(refreshError) && refreshError.response?.status === 401) {
         window.dispatchEvent(new CustomEvent('quizsphere:session-expired'));
       }
       return Promise.reject(refreshError);
@@ -102,7 +104,15 @@ export function apiErrorStatus(error: unknown): number | undefined {
 
 export const authApi = {
   me: () => getData<{ user: User }>('/auth/me').then((value) => value.user),
-  login: (payload: { email: string; password: string }) => postData<{ user: User }>('/auth/login', payload).then((value) => value.user),
-  register: (payload: { email: string; username: string; displayName: string; password: string }) => postData<{ user: User; signupBonus: number }>('/auth/register', payload),
+  login: async (payload: { email: string; password: string }) => {
+    const result = await postData<{ user: User }>('/auth/login', payload);
+    authGeneration += 1;
+    return result.user;
+  },
+  register: async (payload: { email: string; username: string; displayName: string; password: string }) => {
+    const result = await postData<{ user: User; signupBonus: number }>('/auth/register', payload);
+    authGeneration += 1;
+    return result;
+  },
   logout: () => postData<{ loggedOut: boolean }>('/auth/logout'),
 };
