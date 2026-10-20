@@ -5,6 +5,7 @@ import { Card, EmptyState, PageHeader, PageSkeleton } from '../components/ui';
 import { getData, apiErrorMessage } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui';
+import { SpecialEventDashboardCard } from '../components/SpecialEventFeature';
 
 type Overview = { metrics: { qcoinBalance: number; attempts: number; completedAttempts: number; averageScore: number | null; publishedCreations: number; pendingSubmissions: number; leaderboardRank: number | null }; recentActivity: Array<{ id: string; type: string; title: string; description: string; createdAt: string }> };
 
@@ -18,6 +19,7 @@ export default function OverviewPage() {
   const firstName = user?.displayName.split(' ')[0] ?? 'there';
   return <div className="page-container">
     <PageHeader eyebrow="Your workspace" title={`Good ${greeting()}, ${firstName}`} description="A clear view of your participation and creator activity." action={<Link to="/app/creator-studio/new/quiz" className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-brand-700"><Plus size={16} />Create quiz</Link>} />
+    <SpecialEventDashboardCard />
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <MetricCard label="Available QCoins" value={metrics.qcoinBalance.toLocaleString()} detail="Virtual platform balance" icon={CircleDollarSign} accent="purple" to="/app/wallet" />
       <MetricCard label="Quiz attempts" value={String(metrics.attempts)} detail={`${metrics.completedAttempts} completed`} icon={BookOpenCheck} accent="blue" to="/app/attempts" />

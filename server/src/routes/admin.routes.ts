@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { adjustWallet, adminOverview, createCategory, decideReview, getPlatformConfig, getSettlements, listAuditLogs, listCategories, listLedger, listReviews, listUsers, reviewDetail, settleQuizPrize, updateCategory, updatePlatformConfig, updateUser } from '../controllers/admin.controller.js';
+import { adjustWallet, adminOverview, createCategory, decideReview, getPlatformConfig, getSettlements, listAuditLogs, listCategories, listLedger, listReviews, listUsers, reviewDetail, settleQuizPrize, suspendPublishedQuiz, updateCategory, updatePlatformConfig, updateUser } from '../controllers/admin.controller.js';
 import { PASS_PRODUCTS } from '../constants/passes.js';
 
 const router = Router();
@@ -14,6 +14,7 @@ router.get('/reviews/:type/:id', asyncHandler(reviewDetail));
 router.post('/reviews/:type/:id/decision', validateBody(z.object({ decision: z.enum(['approved', 'rejected', 'changes_requested']), note: z.string().trim().max(1000).default(''), qualityRating: z.number().int().min(1).max(5).optional() }).strict().superRefine((value, context) => {
   if (value.decision !== 'approved' && value.note.length < 5) context.addIssue({ code: z.ZodIssueCode.custom, path: ['note'], message: 'Provide clear feedback for this decision.' });
 })), asyncHandler(decideReview));
+router.post('/quizzes/:id/suspend', validateBody(z.object({ reason: z.string().trim().min(5).max(1000) }).strict()), asyncHandler(suspendPublishedQuiz));
 router.get('/users', asyncHandler(listUsers));
 router.patch('/users/:id', validateBody(z.object({ status: z.enum(['active', 'suspended', 'closed']).optional(), role: z.enum(['user', 'admin']).optional(), reason: z.string().trim().min(5).max(1000) }).strict()), asyncHandler(updateUser));
 router.get('/config', asyncHandler(getPlatformConfig));

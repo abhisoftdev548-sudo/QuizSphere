@@ -4,6 +4,7 @@ import { Poll } from '../models/Poll.js';
 import { Quiz } from '../models/Quiz.js';
 import { QuizAttempt } from '../models/QuizAttempt.js';
 import { User } from '../models/User.js';
+import { quizAttemptLeaderboardPipeline } from '../services/leaderboard.service.js';
 import { sendData } from '../utils/http.js';
 
 function startOfPeriod(period: string): Date | null {
@@ -42,10 +43,7 @@ export async function leaderboard(req: Request, res: Response): Promise<void> {
     ranked = [...byUser.entries()].filter(([, stats]) => stats.published > 0).map(([id, stats]) => ({ id, score: stats.engagement, publishedCount: stats.published, engagement: stats.engagement }));
     ranked.sort((a, b) => b.score - a.score || b.publishedCount - a.publishedCount || a.id.localeCompare(b.id));
   } else {
-    const aggregate = await QuizAttempt.aggregate([
-      { $match: { status: 'completed', submittedAt: dateMatch, score: { $ne: null } } },
-      { $group: { _id: '$userId', attempts: { $sum: 1 }, averageScore: { $avg: '$score' }, passed: { $sum: { $cond: ['$passed', 1, 0] } }, bestScore: { $max: '$score' } } },
-    ]);
+    const aggregate = await QuizAttempt.aggregate(quizAttemptLeaderboardPipeline(dateMatch));
     ranked = aggregate.map((row) => ({ id: String(row._id), score: type === 'consistency' ? row.passed : Math.round(row.averageScore), attempts: row.attempts, passed: row.passed, bestScore: row.bestScore, averageScore: Math.round(row.averageScore), passRate: Math.round((row.passed / row.attempts) * 100) }));
     ranked.sort((a, b) => type === 'consistency' ? b.passed - a.passed || b.passRate - a.passRate || b.attempts - a.attempts || a.id.localeCompare(b.id) : b.score - a.score || b.attempts - a.attempts || b.bestScore - a.bestScore || a.id.localeCompare(b.id));
   }

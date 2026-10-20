@@ -6,10 +6,7 @@ import { PollVote } from '../models/PollVote.js';
 import { Quiz, QuizVersion } from '../models/Quiz.js';
 import { QuizAttempt } from '../models/QuizAttempt.js';
 import { QuizPrizePool } from '../models/PrizePool.js';
-import { User } from '../models/User.js';
-import { Notification } from '../models/Notification.js';
-import { runInTransaction } from '../services/transaction.service.js';
-import { scoreAnswers } from '../services/scoring.service.js';
+import { getSpecialEventResults } from '../services/specialEventSettlement.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendData, pageNumber } from '../utils/http.js';
 
@@ -19,6 +16,22 @@ const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, (match) =>
 export async function getCategories(_req: Request, res: Response): Promise<void> {
   const items = await Category.find({ isActive: true }).sort({ name: 1 }).select('name slug contentType description parentId').lean();
   sendData(res, { items });
+}
+
+export async function featuredSpecialEvent(_req: Request, res: Response): Promise<void> {
+  const time = now();
+  const publishedEvents = {
+    status: 'published',
+    $or: [{ quizType: 'special_event' }, { quizType: null, closesAt: { $ne: null } }],
+    closesAt: { $gt: time },
+  };
+  const activeEvent = await Quiz.findOne({ ...publishedEvents, startsAt: { $lte: time } })
+    .sort({ closesAt: 1 }).select('title startsAt closesAt').lean() as any;
+  const event = activeEvent ?? await Quiz.findOne({ ...publishedEvents, startsAt: { $gt: time } })
+    .sort({ startsAt: 1 }).select('title startsAt closesAt').lean() as any;
+  sendData(res, {
+    item: event ? { id: String(event._id), title: event.title, startsAt: event.startsAt, closesAt: event.closesAt } : null,
+  });
 }
 
 export async function explore(req: Request, res: Response): Promise<void> {
@@ -94,64 +107,7 @@ export async function quizDetail(req: Request, res: Response): Promise<void> {
 }
 
 export async function quizEventResults(req: Request, res: Response): Promise<void> {
-  const quiz = await Quiz.findOne({ _id: req.params.id, status: 'published' }).select('quizType closesAt title passingScorePercent').lean() as any;
-  const quizType = quiz?.quizType ?? (quiz?.closesAt ? 'special_event' : 'general');
-  if (!quiz || quizType !== 'special_event' || !quiz.closesAt) throw new ApiError(404, 'Special Event results are not available.', 'CONTENT_NOT_FOUND');
-  if (quiz.closesAt > now()) throw new ApiError(409, 'Special Event results will be available after the quiz closes.', 'RESULTS_PENDING');
-  await runInTransaction(async (session) => {
-    const activeAttempts = await QuizAttempt.find({ quizId: quiz._id, status: 'in_progress' }).session(session);
-    const versions = new Map<string, any>();
-    for (const attempt of activeAttempts) {
-      const versionId = String(attempt.quizVersionId);
-      let version = versions.get(versionId);
-      if (!version) {
-        version = await QuizVersion.findById(attempt.quizVersionId).session(session);
-        if (!version) throw new ApiError(409, 'An active attempt references an unavailable quiz version.', 'QUIZ_VERSION_NOT_FOUND');
-        versions.set(versionId, version);
-      }
-      const scored = scoreAnswers(version.questions as any[], attempt.answers as any[]);
-      attempt.status = 'expired';
-      attempt.score = scored.percent;
-      attempt.maxScore = scored.maxScore;
-      attempt.correctCount = scored.correctCount;
-      attempt.passed = scored.percent >= quiz.passingScorePercent;
-      attempt.submittedAt = quiz.closesAt;
-      await attempt.save({ session });
-      await Notification.create([{
-        userId: attempt.userId,
-        type: 'result_available',
-        title: 'Your quiz result is ready',
-        message: `Your attempt for “${quiz.title}” was finalized when the event closed.`,
-        link: `/attempts/${attempt._id}`,
-        relatedType: 'attempt',
-        relatedId: attempt._id,
-      }], { session });
-    }
-  });
-  const attempts = await QuizAttempt.find({ quizId: quiz._id, status: { $in: ['completed', 'expired'] }, score: { $ne: null } })
-    .sort({ score: -1, submittedAt: 1, _id: 1 }).select('userId score passed submittedAt').lean() as any[];
-  const bestByUser = new Map<string, any>();
-  for (const attempt of attempts) {
-    const userId = String(attempt.userId);
-    if (!bestByUser.has(userId)) bestByUser.set(userId, attempt);
-  }
-  const rows = [...bestByUser.entries()].map(([userId, attempt]) => ({ userId, score: attempt.score ?? 0, passed: Boolean(attempt.passed), submittedAt: attempt.submittedAt }));
-  const eligible = rows.filter((row) => row.passed);
-  let currentRank = 0;
-  let previousScore: number | null = null;
-  const rankByUser = new Map<string, number>();
-  eligible.forEach((row, index) => {
-    if (row.score !== previousScore) currentRank = index + 1;
-    rankByUser.set(row.userId, currentRank);
-    previousScore = row.score;
-  });
-  const users = await User.find({ _id: { $in: rows.map((row) => row.userId) }, status: 'active' }).select('username displayName avatarUrl').lean();
-  const byId = new Map(users.map((user) => [String(user._id), user]));
-  const items = rows.flatMap((row) => {
-    const user = byId.get(row.userId);
-    return user ? [{ rank: rankByUser.get(row.userId) ?? null, score: row.score, passed: row.passed, submittedAt: row.submittedAt, user: { id: row.userId, username: user.username, displayName: user.displayName, avatarUrl: user.avatarUrl ?? null } }] : [];
-  });
-  sendData(res, { quizTitle: quiz.title, items, participantCount: rows.length });
+  sendData(res, await getSpecialEventResults(String(req.params.id)));
 }
 
 export async function pollDetail(req: Request, res: Response): Promise<void> {

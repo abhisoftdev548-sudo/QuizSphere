@@ -27,6 +27,7 @@ const statusConfig: Record<Status, { label: string; style: string }> = {
   approved: { label: 'Approved', style: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
   published: { label: 'Published', style: 'bg-green-50 text-green-700 ring-green-200' },
   rejected: { label: 'Rejected', style: 'bg-rose-50 text-rose-700 ring-rose-200' },
+  suspended: { label: 'Suspended by admin', style: 'bg-rose-50 text-rose-700 ring-rose-200' },
   closed: { label: 'Closed', style: 'bg-slate-100 text-slate-500 ring-slate-200' },
   archived: { label: 'Archived', style: 'bg-slate-100 text-slate-500 ring-slate-200' },
 };

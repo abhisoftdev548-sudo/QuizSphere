@@ -12,7 +12,7 @@ export type User = {
   createdAt?: string;
 };
 
-export type Status = 'draft' | 'pending_review' | 'changes_requested' | 'approved' | 'published' | 'rejected' | 'closed' | 'archived';
+export type Status = 'draft' | 'pending_review' | 'changes_requested' | 'approved' | 'published' | 'rejected' | 'suspended' | 'closed' | 'archived';
 export type Category = { _id?: string; id?: string; name: string; slug?: string; contentType?: 'quiz' | 'poll' | 'both'; description?: string };
 export type Creator = { id: string; username: string; displayName: string; avatarUrl?: string | null } | null;
 export type ExploreItem = {
@@ -47,6 +47,7 @@ export type CreatorContent = {
   description: string;
   category?: string | null;
   categoryId?: string | null;
+  quizType?: 'general' | 'special_event';
   status: Status;
   questionCount?: number;
   options?: Array<{ id?: string; text: string }>;
@@ -56,6 +57,7 @@ export type CreatorContent = {
   timeLimitSeconds?: number | null;
   passingScorePercent?: number;
   reviewFeedback?: string;
+  suspensionReason?: string;
   version?: number;
   updatedAt: string;
   createdAt?: string;

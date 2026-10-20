@@ -1,7 +1,7 @@
 import { model, Schema } from 'mongoose';
 
 const auditSchema = new Schema({
-  actorId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  actorId: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
   idempotencyKey: { type: String, unique: true, sparse: true },
   action: { type: String, required: true, maxlength: 100 },
   targetType: { type: String, required: true, maxlength: 60 },

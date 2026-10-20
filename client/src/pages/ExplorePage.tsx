@@ -5,6 +5,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { Button, Card, EmptyState, PageHeader, PageSkeleton, SelectInput, TextInput } from '../components/ui';
 import { getData, apiErrorMessage } from '../services/api';
 import type { ApiPage, Category, ExploreItem } from '../types/api';
+import { SpecialEventExploreCard } from '../components/SpecialEventFeature';
 
 export default function ExplorePage() {
   const location = useLocation();
@@ -19,6 +20,11 @@ export default function ExplorePage() {
   useEffect(() => { const id = window.setTimeout(() => setSearch(searchInput.trim()), 250); return () => window.clearTimeout(id); }, [searchInput]);
 
   const categories = useQuery({ queryKey: ['categories'], queryFn: () => getData<{ items: Category[] }>('/explore/categories').then((value) => value.items) });
+  const featuredEvent = useQuery({
+    queryKey: ['featured-special-event'],
+    queryFn: () => getData<{ item: { id: string } | null }>('/explore/special-event').then((result) => result.item),
+    staleTime: 30_000,
+  });
   const query = useInfiniteQuery({
     queryKey: ['explore', { search, type, categoryId, difficulty, sort }],
     initialPageParam: 1,
@@ -26,6 +32,7 @@ export default function ExplorePage() {
     getNextPageParam: (lastPage) => lastPage.pagination.page < lastPage.pagination.pages ? lastPage.pagination.page + 1 : undefined,
   });
   const items = query.data?.pages.flatMap((page) => page.items) ?? [];
+  const regularItems = items.filter((item) => item.id !== featuredEvent.data?.id);
   const filtersActive = Boolean(search || type !== 'all' || categoryId !== 'all' || difficulty !== 'all');
 
   return <div className="page-container">
@@ -41,8 +48,9 @@ export default function ExplorePage() {
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs text-slate-400"><span className="inline-flex items-center gap-1.5"><SlidersHorizontal size={13} />Showing approved, currently available content</span><span>{query.data?.pages[0]?.pagination.total ?? 0} results</span></div>
     </Card>
 
-    {query.isLoading ? <PageSkeleton /> : query.isError ? <Card><EmptyState title="Explore is temporarily unavailable" description={apiErrorMessage(query.error)} action={<Button variant="outline" onClick={() => void query.refetch()}>Try again</Button>} /></Card> : items.length === 0 ? <Card><EmptyState icon={Sparkles} title={filtersActive ? 'No matching content' : 'Nothing published just yet'} description={filtersActive ? 'Try adjusting your search or filters. Only approved and currently available content appears here.' : 'When the community publishes its first approved quiz or poll, it will appear here. You can start by creating one in Creator Studio.'} action={appPath ? <Link to="/app/creator-studio" className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">Open Creator Studio<ArrowUpRight size={15} /></Link> : <Link to="/register" className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">Create an account<ArrowUpRight size={15} /></Link>} /></Card> : <>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{items.map((item) => <ExploreCard key={`${item.type}-${item.id}`} item={item} base={base} />)}</div>
+    <SpecialEventExploreCard base={base} />
+    {query.isLoading ? <PageSkeleton /> : query.isError ? <Card><EmptyState title="Explore is temporarily unavailable" description={apiErrorMessage(query.error)} action={<Button variant="outline" onClick={() => void query.refetch()}>Try again</Button>} /></Card> : regularItems.length === 0 ? <Card><EmptyState icon={Sparkles} title={filtersActive ? 'No matching content' : 'Nothing published just yet'} description={filtersActive ? 'Try adjusting your search or filters. Only approved and currently available content appears here.' : 'When the community publishes its first approved quiz or poll, it will appear here. You can start by creating one in Creator Studio.'} action={appPath ? <Link to="/app/creator-studio" className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">Open Creator Studio<ArrowUpRight size={15} /></Link> : <Link to="/register" className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">Create an account<ArrowUpRight size={15} /></Link>} /></Card> : <>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{regularItems.map((item) => <ExploreCard key={`${item.type}-${item.id}`} item={item} base={base} />)}</div>
       {query.hasNextPage && <div className="mt-6 text-center"><Button variant="outline" onClick={() => void query.fetchNextPage()} disabled={query.isFetchingNextPage}>{query.isFetchingNextPage ? 'Loading…' : <>Load more<ArrowDown size={15} /></>}</Button></div>}
     </>}
   </div>;

@@ -77,6 +77,18 @@ function blankQuestion(): QuizQuestion {
   return { type: 'single_choice', prompt: '', options, correctAnswers: [options[0].key], explanation: '', hint: '', points: 1 };
 }
 
+function firstErrorMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.message === 'string') return entry.message;
+  for (const [key, child] of Object.entries(entry)) {
+    if (key === 'ref' || key === 'types') continue;
+    const message = firstErrorMessage(child);
+    if (message) return message;
+  }
+  return undefined;
+}
+
 function normalizeImportedQuestion(value: unknown, index: number): QuizQuestion {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`Question ${index + 1} must be a JSON object.`);
@@ -176,7 +188,7 @@ export default function QuizEditorPage() {
   const { toast } = useToast();
   const { user } = useAuth();
   const requestKey = useRef(crypto.randomUUID());
-  const actionRef = useRef<'save' | 'submit'>('save');
+  const actionRef = useRef<'save' | 'publish'>('save');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [importJson, setImportJson] = useState('');
@@ -202,7 +214,7 @@ export default function QuizEditorPage() {
   const needsCreatePass = Boolean(pricing && ((questions?.length ?? 0) > pricing.freeQuizQuestionLimit || (quizType === 'special_event' && pricing.specialEventRequiresCreatePass)));
   const createPassAlreadyUsed = Boolean(draft.data?.item?.createPassConsumed);
   const createPassBalance = createPass?.balance ?? 0;
-  const locked = isEditing && draft.data && !['draft', 'changes_requested', 'rejected'].includes(draft.data.item.status);
+  const locked = isEditing && draft.data && !['draft', 'changes_requested', 'rejected', 'suspended'].includes(draft.data.item.status);
   const isLoading = (isEditing && draft.isLoading) || rules.isLoading;
 
   async function persist(values: QuizValues) {
@@ -212,19 +224,22 @@ export default function QuizEditorPage() {
       const headers = !isEditing ? { 'Idempotency-Key': requestKey.current } : undefined;
       const saved = isEditing ? await putData<{ item: { id: string } }>(`/creator/quizzes/${id}`, payload, headers) : await postData<{ item: { id: string } }>('/creator/quizzes', payload, headers);
       const contentId = saved.item.id;
-      if (actionRef.current === 'submit') {
-        await postData(`/creator/quizzes/${contentId}/submit`);
-        toast('Quiz submitted for administrator review.');
+      if (actionRef.current === 'publish') {
+        await postData(`/creator/quiz/${contentId}/publish`);
+        toast('Your quiz is now published.');
       } else toast('Quiz draft saved.');
-      await Promise.all([client.invalidateQueries({ queryKey: ['passes'] }), client.invalidateQueries({ queryKey: ['auth', 'me'] })]);
+      await Promise.all([client.invalidateQueries({ queryKey: ['passes'] }), client.invalidateQueries({ queryKey: ['auth', 'me'] }), client.invalidateQueries({ queryKey: ['creator-content'] }), client.invalidateQueries({ queryKey: ['wallet'] })]);
       navigate('/app/creator-studio');
     } catch (error) {
       setSubmitError(apiErrorMessage(error));
     }
   }
-  const saveAction = (action: 'save' | 'submit') => {
+  const saveAction = (action: 'save' | 'publish') => {
     actionRef.current = action;
-    void form.handleSubmit((values) => persist(values))();
+    void form.handleSubmit(
+      (values) => persist(values),
+      (errors) => setSubmitError(`Please fix the quiz details before saving. ${firstErrorMessage(errors) ?? 'Check the highlighted fields.'}`),
+    )();
   };
   const loadQuestionsFile = async (file?: File) => {
     if (!file) return;
@@ -277,8 +292,9 @@ export default function QuizEditorPage() {
 
   return <div className="page-container">
     <Link to="/app/creator-studio" className="mb-5 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-brand-700"><ArrowLeft size={14} />Creator Studio</Link>
-    <PageHeader title={isEditing ? 'Edit quiz draft' : 'Create a quiz'} description="Shape your questions, set participation rules, and save your work before review." eyebrow="Creator Studio" action={<Button variant="outline" onClick={() => setPreviewOpen(true)}><Eye size={15} />Preview</Button>} />
+    <PageHeader title={isEditing ? 'Edit quiz draft' : 'Create a quiz'} description="Shape your questions, set participation rules, save a draft, and publish when it is ready." eyebrow="Creator Studio" action={<Button variant="outline" onClick={() => setPreviewOpen(true)}><Eye size={15} />Preview</Button>} />
     {draft.data?.item?.reviewFeedback && <div className="mb-5 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800"><strong className="font-semibold">Review feedback:</strong> {draft.data.item.reviewFeedback}</div>}
+    {draft.data?.item?.suspensionReason && <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"><strong className="font-semibold">Suspended by admin:</strong> {draft.data.item.suspensionReason} Edit the quiz and publish again when ready.</div>}
     <form onSubmit={(event) => event.preventDefault()} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_290px]">
       <div className="space-y-5">
         <Card className="p-5 sm:p-6"><SectionTitle title="Quiz details" step="01" /><div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -340,7 +356,7 @@ export default function QuizEditorPage() {
         </div></Card>
         <Card className="p-5"><SectionTitle title="QCoin prize" step="04" />
           <div className="mt-4 space-y-4">
-            <Field label={quizType === 'general' ? 'Maximum reward pool' : 'Creator-funded prize pool'} hint="This amount is reserved from your wallet when the approved quiz is published." error={form.formState.errors.creatorFundedPrize?.message}>
+            <Field label={quizType === 'general' ? 'Maximum reward pool' : 'Creator-funded prize pool'} hint="This amount is reserved from your wallet when you publish the quiz." error={form.formState.errors.creatorFundedPrize?.message}>
               <div className="relative"><TextInput type="number" min="0" {...form.register('creatorFundedPrize', { valueAsNumber: true })} className="pr-16" /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">QCoins</span></div>
             </Field>
             {quizType === 'general' && form.watch('creatorFundedPrize') > 0 && <Field label="Fixed reward per passing participant" hint="Paid immediately from the reserved pool; rewards stop when the pool cannot cover the full amount." error={form.formState.errors.rewardPerWinner?.message}>
@@ -373,7 +389,7 @@ export default function QuizEditorPage() {
         <Card className="p-5"><div className="flex items-start gap-2.5"><CircleHelpIcon /><div><h3 className="text-xs font-bold text-ink">Review checklist</h3><p className="mt-1.5 text-xs leading-5 text-slate-500">Make sure every question has a valid answer key. Your correct answers stay private and are only returned to the creator and eligible result view.</p></div></div></Card>
         <div className="space-y-2.5">
           {submitError && <p className="rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-xs text-rose-700">{submitError}</p>}
-          <Button type="button" className="w-full" disabled={form.formState.isSubmitting || questionArray.fields.length === 0} onClick={() => saveAction('submit')}>{form.formState.isSubmitting ? 'Saving…' : 'Submit for review'}<FileCheck2 size={16} /></Button>
+          <Button type="button" className="w-full" disabled={form.formState.isSubmitting || questionArray.fields.length === 0} onClick={() => saveAction('publish')}>{form.formState.isSubmitting ? actionRef.current === 'publish' ? 'Publishing…' : 'Saving…' : 'Publish quiz'}<FileCheck2 size={16} /></Button>
           <Button type="button" variant="outline" className="w-full" disabled={form.formState.isSubmitting} onClick={() => saveAction('save')}>Save as draft</Button>
           <p className="text-center text-[10px] leading-4 text-slate-400">You can edit your draft and submit it whenever it’s ready.</p>
         </div>

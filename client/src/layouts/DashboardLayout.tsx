@@ -3,12 +3,14 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, Bell, BookOpenCheck, ChevronDown, CircleDollarSign, Compass,
-  LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings, ShieldCheck, Trophy, UserRound,
+  LayoutDashboard, LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings, ShieldCheck, Sun, Trophy, UserRound,
   UsersRound, X, Zap, FileClock,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { getData } from '../services/api';
 import { useToast } from '../context/ToastContext';
+import { SpecialEventBanner } from '../components/SpecialEventFeature';
 
 const primaryLinks = [
   { label: 'Overview', to: '/app/overview', icon: LayoutDashboard },
@@ -68,6 +70,7 @@ export default function DashboardLayout() {
     </AnimatePresence>
     <div className={`min-h-screen transition-[margin] duration-200 ${collapsed ? 'md:ml-[78px]' : 'md:ml-[252px]'}`}>
       <Topbar title={routeTitle} onMenu={() => setDrawerOpen(true)} />
+      <SpecialEventBanner />
       <main className="min-h-[calc(100vh-64px)]"><Outlet /></main>
     </div>
   </div>;
@@ -118,6 +121,7 @@ function Sidebar({ collapsed, onCollapse, mobile = false, onClose, role, user }:
 
 function Topbar({ title, onMenu }: { title: string; onMenu: () => void }) {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -140,6 +144,7 @@ function Topbar({ title, onMenu }: { title: string; onMenu: () => void }) {
     </div>
     <div className="flex items-center gap-2.5">
       <div className="hidden items-center gap-1.5 rounded-lg border border-brand-100 bg-brand-50/80 px-2.5 py-1.5 text-xs font-semibold text-brand-700 sm:flex"><Zap size={14} fill="currentColor" />{user?.walletBalance?.toLocaleString() ?? 0}<span className="font-medium text-brand-600">QCoins</span></div>
+      <button onClick={toggleTheme} className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-brand-600" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
       <button onClick={() => navigate('/app/notifications')} className="relative rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-brand-600" aria-label={unread > 0 ? `${unread} unread notifications` : 'Notifications'}><Bell size={18} />{unread > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full border-2 border-white bg-rose-500" />}</button>
       <div className="relative">
         <button onClick={() => setMenuOpen((open) => !open)} className="flex items-center gap-2 rounded-xl p-1.5 transition hover:bg-slate-50" aria-expanded={menuOpen} aria-haspopup="menu">

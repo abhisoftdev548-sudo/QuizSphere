@@ -16,6 +16,7 @@ import { PASS_PRODUCTS, passProductsOrDefault } from '../constants/passes.js';
 import { applyLedgerEntry } from '../services/wallet.service.js';
 import { distributePrize } from '../services/prize.service.js';
 import { scoreAnswers } from '../services/scoring.service.js';
+import { settleSpecialEventPrize } from '../services/specialEventSettlement.service.js';
 import { runInTransaction } from '../services/transaction.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendData, pageNumber } from '../utils/http.js';
@@ -52,7 +53,7 @@ export async function listReviews(req: Request, res: Response): Promise<void> {
     type === 'quiz' ? 0 : Poll.countDocuments(query),
   ]);
   const combined = [
-    ...(quizzes as any[]).map((item) => ({ id: String(item._id), type: 'quiz', title: item.title, status: item.status, creator: publicAdminUser(item.creatorId), category: item.categoryId?.name ?? null, questionCount: item.questionCount, entryFee: item.entryFee, updatedAt: item.updatedAt })),
+    ...(quizzes as any[]).map((item) => ({ id: String(item._id), type: 'quiz', title: item.title, status: item.status, creator: publicAdminUser(item.creatorId), category: item.categoryId?.name ?? null, questionCount: item.questionCount, entryFee: item.entryFee, quizType: item.quizType ?? (item.closesAt ? 'special_event' : 'general'), creatorFundedPrize: item.creatorFundedPrize ?? 0, updatedAt: item.updatedAt })),
     ...(polls as any[]).map((item) => ({ id: String(item._id), type: 'poll', title: item.title, status: item.status, creator: publicAdminUser(item.creatorId), category: item.categoryId?.name ?? null, optionCount: item.options.length, votingFee: item.votingFee, updatedAt: item.updatedAt })),
   ].sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
   const items = type === 'all' ? combined.slice((page - 1) * limit, page * limit) : combined;
@@ -66,7 +67,7 @@ export async function reviewDetail(req: Request, res: Response): Promise<void> {
     if (!quiz) throw new ApiError(404, 'Quiz submission not found.', 'CONTENT_NOT_FOUND');
     const version = quiz.currentVersionId ? await QuizVersion.findById(quiz.currentVersionId).lean() as any : null;
     const history = await AdminReview.find({ targetType: 'quiz', targetId: quiz._id }).sort({ createdAt: -1 }).populate('adminId', 'username displayName').lean();
-    sendData(res, { item: { id: String(quiz._id), type, title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, creator: publicAdminUser(quiz.creatorId), status: quiz.status, quizType: quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general'), difficulty: quiz.difficulty, tags: quiz.tags, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, startsAt: quiz.startsAt ?? null, closesAt: quiz.closesAt, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, requiredPassKey: quiz.requiredPassKey ?? null, prizeRules: quiz.prizeRules, creatorFundedPrize: quiz.creatorFundedPrize, rewardPerWinner: quiz.rewardPerWinner ?? 0, reviewFeedback: quiz.reviewFeedback, version: quiz.version, questions: version?.questions ?? [] }, history });
+    sendData(res, { item: { id: String(quiz._id), type, title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, creator: publicAdminUser(quiz.creatorId), status: quiz.status, quizType: quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general'), difficulty: quiz.difficulty, tags: quiz.tags, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, startsAt: quiz.startsAt ?? null, closesAt: quiz.closesAt, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, requiredPassKey: quiz.requiredPassKey ?? null, prizeRules: quiz.prizeRules, creatorFundedPrize: quiz.creatorFundedPrize, rewardPerWinner: quiz.rewardPerWinner ?? 0, reviewFeedback: quiz.reviewFeedback, suspensionReason: quiz.suspensionReason ?? '', version: quiz.version, questions: version?.questions ?? [] }, history });
   } else if (type === 'poll') {
     const poll = await Poll.findById(id).populate('creatorId', 'username displayName email').populate('categoryId', 'name').lean() as any;
     if (!poll) throw new ApiError(404, 'Poll submission not found.', 'CONTENT_NOT_FOUND');
@@ -93,6 +94,45 @@ export async function decideReview(req: Request, res: Response): Promise<void> {
     return { id: String(content._id), status: content.status };
   });
   sendData(res, { ...reviewed, type, reviewFeedback: feedback });
+}
+
+export async function suspendPublishedQuiz(req: Request, res: Response): Promise<void> {
+  const { reason } = req.body as { reason: string };
+  const result = await runInTransaction(async (session) => {
+    const quiz = await Quiz.findOne({ _id: req.params.id, status: 'published' }).session(session);
+    if (!quiz) throw new ApiError(404, 'Published quiz not found.', 'CONTENT_NOT_FOUND');
+    quiz.status = 'suspended';
+    quiz.suspensionReason = reason;
+    await quiz.save({ session });
+    await AdminReview.create([{
+      targetType: 'quiz',
+      targetId: quiz._id,
+      contentVersion: quiz.version,
+      adminId: req.auth!.userId,
+      decision: 'unpublished',
+      note: reason,
+    }], { session });
+    await Notification.create([{
+      userId: quiz.creatorId,
+      type: 'account_update',
+      title: 'Quiz suspended by admin',
+      message: `“${quiz.title}” was removed from public listings. Reason: ${reason.slice(0, 250)}`,
+      link: '/app/creator-studio',
+      relatedType: 'quiz',
+      relatedId: quiz._id,
+    }], { session });
+    await AuditLog.create([{
+      actorId: req.auth!.userId,
+      action: 'quiz_suspended',
+      targetType: 'quiz',
+      targetId: String(quiz._id),
+      reason,
+      ipAddress: req.ip ?? '',
+      metadata: { version: quiz.version, creatorFundedPrize: quiz.creatorFundedPrize, quizType: quiz.quizType },
+    }], { session });
+    return { id: String(quiz._id), status: quiz.status, suspensionReason: quiz.suspensionReason };
+  });
+  sendData(res, result);
 }
 
 export async function listUsers(req: Request, res: Response): Promise<void> {
@@ -186,6 +226,13 @@ export async function getSettlements(_req: Request, res: Response): Promise<void
 }
 
 export async function settleQuizPrize(req: Request, res: Response): Promise<void> {
+  const quizForSettlement = await Quiz.findById(req.params.id).select('quizType closesAt').lean() as any;
+  if (!quizForSettlement) throw new ApiError(404, 'Published quiz not found.', 'CONTENT_NOT_FOUND');
+  const quizType = quizForSettlement.quizType ?? (quizForSettlement.closesAt ? 'special_event' : 'general');
+  if (quizType === 'special_event') {
+    sendData(res, await settleSpecialEventPrize(String(req.params.id), req.auth!.userId, req.ip ?? ''));
+    return;
+  }
   const result = await runInTransaction(async (session) => {
     const quiz = await Quiz.findById(req.params.id).session(session);
     if (!quiz || quiz.status !== 'published') throw new ApiError(404, 'Published quiz not found.', 'CONTENT_NOT_FOUND');

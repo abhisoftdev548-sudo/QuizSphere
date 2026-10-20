@@ -75,7 +75,7 @@ export async function updateQuiz(req: Request, res: Response): Promise<void> {
   }
   const quiz = await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req) });
   if (!quiz) throw new ApiError(404, 'Quiz not found.', 'CONTENT_NOT_FOUND');
-  if (!['draft', 'changes_requested', 'rejected'].includes(quiz.status)) throw new ApiError(409, 'This quiz cannot be edited in its current review or publication state.', 'CONTENT_NOT_EDITABLE');
+  if (!['draft', 'changes_requested', 'rejected', 'suspended'].includes(quiz.status)) throw new ApiError(409, 'This quiz cannot be edited in its current review or publication state.', 'CONTENT_NOT_EDITABLE');
   const nextVersion = quiz.version + 1;
   const needsCreatePass = requiresCreatePass(data.questions.length, config.freeQuizQuestionLimit, data.quizType, config.specialEventRequiresCreatePass);
   if (needsCreatePass && !quiz.createPassConsumed && !config.passProducts.some((product) => product.key === 'create' && product.active)) {
@@ -92,14 +92,8 @@ export async function updateQuiz(req: Request, res: Response): Promise<void> {
 }
 
 export async function submitQuiz(req: Request, res: Response): Promise<void> {
-  const quiz = await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req) });
-  if (!quiz) throw new ApiError(404, 'Quiz not found.', 'CONTENT_NOT_FOUND');
-  if (!['draft', 'changes_requested'].includes(quiz.status)) throw new ApiError(409, 'Only a draft or requested revision can be submitted.', 'INVALID_CONTENT_STATE');
-  if (!quiz.currentVersionId || quiz.questionCount < 1) throw new ApiError(422, 'Add at least one valid question before submitting.', 'INCOMPLETE_CONTENT');
-  quiz.status = 'pending_review';
-  quiz.reviewFeedback = '';
-  await quiz.save();
-  sendData(res, { item: serializeCreatorQuiz(quiz) });
+  req.params.type = 'quiz';
+  await publishApproved(req, res);
 }
 
 export async function createPoll(req: Request, res: Response): Promise<void> {
@@ -170,30 +164,42 @@ export async function publishApproved(req: Request, res: Response): Promise<void
   if (type !== 'quiz' && type !== 'poll') throw new ApiError(400, 'Content type must be quiz or poll.', 'INVALID_CONTENT_TYPE');
   const published = await runInTransaction(async (session) => {
     const item: any = type === 'quiz'
-      ? await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req), status: 'approved' }).session(session)
+      ? await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req), status: { $in: ['approved', 'draft', 'changes_requested', 'rejected', 'suspended'] } }).session(session)
       : await Poll.findOne({ _id: req.params.id, creatorId: ownerId(req), status: 'approved' }).session(session);
-    if (!item) throw new ApiError(404, 'Approved content not found.', 'CONTENT_NOT_FOUND');
-    if (type === 'quiz' && item.creatorFundedPrize > 0) {
-      await applyLedgerEntry({
-        userId: ownerId(req),
-        amount: -item.creatorFundedPrize,
-        type: 'prize_funding',
-        idempotencyKey: `quiz-prize-funding:${item._id}`,
-        description: `Funded QCoin prize for “${item.title}”`,
-        relatedType: 'quiz',
-        relatedId: item._id,
-      }, session);
-      await QuizPrizePool.findOneAndUpdate(
-        { quizId: item._id },
-        { $setOnInsert: { quizId: item._id }, $inc: { fundedAmount: item.creatorFundedPrize } },
-        { upsert: true, new: true, session },
-      );
+    if (!item) throw new ApiError(404, type === 'quiz' ? 'Quiz draft not found.' : 'Approved poll not found.', 'CONTENT_NOT_FOUND');
+    if (type === 'quiz') {
+      const existingPool = await QuizPrizePool.findOne({ quizId: item._id }).session(session);
+      if (existingPool) {
+        if (existingPool.status !== 'open' || existingPool.fundedAmount !== item.creatorFundedPrize) {
+          throw new ApiError(409, 'This quiz already has a funded or settled prize pool. Create a new quiz to change its prize amount.', 'PRIZE_POOL_ALREADY_FUNDED');
+        }
+      } else if (item.creatorFundedPrize > 0) {
+        await applyLedgerEntry({
+          userId: ownerId(req),
+          amount: -item.creatorFundedPrize,
+          type: 'prize_funding',
+          idempotencyKey: `quiz-prize-funding:${item._id}`,
+          description: `Funded QCoin prize for “${item.title}”`,
+          relatedType: 'quiz',
+          relatedId: item._id,
+        }, session);
+        await QuizPrizePool.create([{ quizId: item._id, fundedAmount: item.creatorFundedPrize }], { session });
+      }
     }
     item.status = 'published';
+    item.suspensionReason = '';
     item.publishedAt = new Date();
     await item.save({ session });
     await Notification.create([{ userId: item.creatorId, type: 'content_published', title: 'Your content is published', message: `“${item.title}” is now available to the community.`, link: `/explore/${type === 'quiz' ? 'quizzes' : 'polls'}/${item._id}`, relatedType: type, relatedId: item._id }], { session });
-    await AuditLog.create([{ actorId: ownerId(req), action: 'content_published', targetType: type, targetId: String(item._id), reason: 'Creator published approved content.', ipAddress: req.ip ?? '' }], { session });
+    await AuditLog.create([{
+      actorId: ownerId(req),
+      action: 'content_published',
+      targetType: type,
+      targetId: String(item._id),
+      reason: type === 'quiz' ? 'Creator published quiz without admin approval.' : 'Creator published approved poll.',
+      ipAddress: req.ip ?? '',
+      metadata: type === 'quiz' ? { quizType: item.quizType, creatorFundedPrize: item.creatorFundedPrize, prizeRules: item.prizeRules } : {},
+    }], { session });
     return item;
   });
   sendData(res, { item: type === 'quiz' ? serializeCreatorQuiz(published) : serializeCreatorPoll(published) });
@@ -262,7 +268,7 @@ export async function creatorPollAnalytics(req: Request, res: Response): Promise
 
 function serializeCreatorQuiz(quiz: any) {
   if (!quiz) return null;
-  return { id: String(quiz._id), type: 'quiz', title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, categoryId: quiz.categoryId?._id ?? quiz.categoryId ?? null, quizType: quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general'), startsAt: quiz.startsAt ?? null, closesAt: quiz.closesAt, difficulty: quiz.difficulty, tags: quiz.tags, status: quiz.status, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, requiredPassKey: quiz.requiredPassKey ?? null, creatorFundedPrize: quiz.creatorFundedPrize ?? 0, rewardPerWinner: quiz.rewardPerWinner ?? 0, prizeRules: quiz.prizeRules ?? [], createPassConsumed: quiz.createPassConsumed ?? false, reviewFeedback: quiz.reviewFeedback, version: quiz.version, updatedAt: quiz.updatedAt, createdAt: quiz.createdAt, publishedAt: quiz.publishedAt };
+  return { id: String(quiz._id), type: 'quiz', title: quiz.title, description: quiz.description, category: quiz.categoryId?.name ?? null, categoryId: quiz.categoryId?._id ?? quiz.categoryId ?? null, quizType: quiz.quizType ?? (quiz.closesAt ? 'special_event' : 'general'), startsAt: quiz.startsAt ?? null, closesAt: quiz.closesAt, difficulty: quiz.difficulty, tags: quiz.tags, status: quiz.status, questionCount: quiz.questionCount, timeLimitSeconds: quiz.timeLimitSeconds, passingScorePercent: quiz.passingScorePercent, entryFee: quiz.entryFee, requiredPassKey: quiz.requiredPassKey ?? null, creatorFundedPrize: quiz.creatorFundedPrize ?? 0, rewardPerWinner: quiz.rewardPerWinner ?? 0, prizeRules: quiz.prizeRules ?? [], createPassConsumed: quiz.createPassConsumed ?? false, reviewFeedback: quiz.reviewFeedback, suspensionReason: quiz.suspensionReason ?? '', version: quiz.version, updatedAt: quiz.updatedAt, createdAt: quiz.createdAt, publishedAt: quiz.publishedAt };
 }
 function serializeCreatorPoll(poll: any) {
   if (!poll) return null;

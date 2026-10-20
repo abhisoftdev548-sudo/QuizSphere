@@ -15,7 +15,7 @@ const quizSchema = new Schema({
   difficulty: { type: String, enum: ['beginner', 'intermediate', 'advanced'], default: 'beginner' },
   language: { type: String, default: 'en', maxlength: 12 },
   coverImageUrl: { type: String, default: null, maxlength: 2048 },
-  status: { type: String, enum: ['draft', 'pending_review', 'changes_requested', 'approved', 'published', 'rejected', 'closed', 'archived'], default: 'draft', index: true },
+  status: { type: String, enum: ['draft', 'pending_review', 'changes_requested', 'approved', 'published', 'rejected', 'suspended', 'closed', 'archived'], default: 'draft', index: true },
   currentVersionId: { type: Schema.Types.ObjectId, ref: 'QuizVersion', default: null },
   version: { type: Number, default: 1, min: 1 },
   questionCount: { type: Number, default: 0, min: 0 },
@@ -32,6 +32,7 @@ const quizSchema = new Schema({
   rewardPerWinner: { type: Number, default: 0, min: 0 },
   allowResultReview: { type: Boolean, default: true },
   reviewFeedback: { type: String, default: '', maxlength: 1000 },
+  suspensionReason: { type: String, default: '', maxlength: 1000 },
   publishedAt: { type: Date, default: null },
   attemptCount: { type: Number, default: 0, min: 0 },
 }, { timestamps: true, versionKey: false });
