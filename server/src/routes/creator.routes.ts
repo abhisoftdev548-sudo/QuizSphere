@@ -3,7 +3,7 @@ import { authenticate } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { quizDraftSchema, pollDraftSchema } from '../validators/content.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { createPoll, createQuiz, creatorAnalytics, creatorPollAnalytics, creatorQuizAnalytics, getPollDraft, getQuizDraft, listCreatorContent, publishApproved, submitPoll, submitQuiz, updatePoll, updateQuiz } from '../controllers/creator.controller.js';
+import { createPoll, createQuiz, creatorAnalytics, creatorPollAnalytics, creatorQuizAnalytics, getPollDraft, getQuizDraft, listCreatorContent, publishCreatorContent, submitPoll, submitQuiz, updatePoll, updateQuiz } from '../controllers/creator.controller.js';
 
 const router = Router();
 router.use(authenticate);
@@ -19,5 +19,5 @@ router.get('/polls/:id', asyncHandler(getPollDraft));
 router.put('/polls/:id', validateBody(pollDraftSchema), asyncHandler(updatePoll));
 router.post('/polls/:id/submit', asyncHandler(submitPoll));
 router.get('/polls/:id/analytics', asyncHandler(creatorPollAnalytics));
-router.post('/:type/:id/publish', asyncHandler(publishApproved));
+router.post('/:type/:id/publish', asyncHandler(publishCreatorContent));
 export default router;

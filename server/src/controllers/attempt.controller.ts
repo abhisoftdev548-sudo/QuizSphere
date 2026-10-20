@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { Notification } from '../models/Notification.js';
 import { Quiz } from '../models/Quiz.js';
 import { QuizAttempt } from '../models/QuizAttempt.js';
+import { CreatorRating } from '../models/CreatorRating.js';
 import { QuizPrizePool } from '../models/PrizePool.js';
 import { QuizVersion } from '../models/Quiz.js';
 import { applyLedgerEntry, consumePass, grantPass } from '../services/wallet.service.js';
@@ -155,11 +156,41 @@ export async function getAttemptResult(req: Request, res: Response): Promise<voi
   sendData(res, await resultPayload(attempt));
 }
 
+export async function rateQuizCreator(req: Request, res: Response): Promise<void> {
+  const attemptId = String(req.params.id);
+  const rating = (req.body as { rating: number }).rating;
+  const creatorRating = await runInTransaction(async (session) => {
+    const attempt = await QuizAttempt.findOne({ _id: attemptId, userId: owner(req) }).session(session);
+    if (!attempt) throw new ApiError(404, 'Attempt not found.', 'ATTEMPT_NOT_FOUND');
+    if (!['completed', 'expired'].includes(attempt.status) || attempt.score === null) {
+      throw new ApiError(409, 'Complete the quiz before rating its creator.', 'ATTEMPT_NOT_COMPLETED');
+    }
+    const quiz = await Quiz.findById(attempt.quizId).select('creatorId').session(session);
+    if (!quiz) throw new ApiError(404, 'Quiz not found.', 'CONTENT_NOT_FOUND');
+    if (String(quiz.creatorId) === owner(req)) throw new ApiError(403, 'You cannot rate your own creator profile.', 'CREATOR_CANNOT_RATE_SELF');
+
+    const saved = await CreatorRating.findOneAndUpdate(
+      { quizId: quiz._id, raterId: owner(req) },
+      { $set: { creatorId: quiz.creatorId, rating } },
+      { new: true, upsert: true, runValidators: true, session },
+    );
+    const [summary] = await CreatorRating.aggregate([
+      { $match: { creatorId: quiz.creatorId } },
+      { $group: { _id: null, averageRating: { $avg: '$rating' }, ratingCount: { $sum: 1 } } },
+    ]).session(session);
+    return { rating: saved.rating, averageRating: Math.round((summary?.averageRating ?? 0) * 10) / 10, ratingCount: summary?.ratingCount ?? 0 };
+  });
+  sendData(res, { creatorRating });
+}
+
 async function resultPayload(attempt: any) {
-  const quiz = await Quiz.findById(attempt.quizId).select('title allowResultReview passingScorePercent quizType closesAt').lean() as any;
+  const quiz = await Quiz.findById(attempt.quizId).select('title creatorId allowResultReview passingScorePercent quizType closesAt').lean() as any;
   const quizType = quiz?.quizType ?? (quiz?.closesAt ? 'special_event' : 'general');
   const rankPending = Boolean(quizType === 'special_event' && quiz?.closesAt && quiz.closesAt > new Date());
-  const base = { attempt: { ...publicAttempt(attempt), quizTitle: quiz?.title ?? 'Quiz' }, resultDetails: null as null | unknown[], rankPending };
+  const creatorRating = quiz && attempt.status !== 'in_progress'
+    ? await getCreatorRatingSummary(attempt.quizId, attempt.userId, quiz.creatorId)
+    : null;
+  const base = { attempt: { ...publicAttempt(attempt), quizTitle: quiz?.title ?? 'Quiz' }, resultDetails: null as null | unknown[], rankPending, creatorRating };
   if (attempt.status === 'in_progress') return base;
   if (!quiz?.allowResultReview) return base;
   const version = await QuizVersion.findById(attempt.quizVersionId).lean() as any;
@@ -171,6 +202,21 @@ async function resultPayload(attempt: any) {
     return { questionId: String(question._id), prompt: question.prompt, type: question.type, options: question.options, correctAnswers: question.correctAnswers, explanation: question.explanation, submittedAnswer: answer?.selections?.length ? answer.selections : answer?.textAnswer ?? '', isCorrect, points: question.points };
   });
   return { ...base, resultDetails: details };
+}
+
+async function getCreatorRatingSummary(quizId: string, raterId: string, creatorId: string) {
+  const [rating, summary] = await Promise.all([
+    CreatorRating.findOne({ quizId, raterId }).select('rating').lean() as any,
+    CreatorRating.aggregate([
+      { $match: { creatorId } },
+      { $group: { _id: null, averageRating: { $avg: '$rating' }, ratingCount: { $sum: 1 } } },
+    ]),
+  ]);
+  return {
+    rating: rating?.rating ?? null,
+    averageRating: Math.round((summary[0]?.averageRating ?? 0) * 10) / 10,
+    ratingCount: summary[0]?.ratingCount ?? 0,
+  };
 }
 
 async function authorizedQuestionPayload(attemptId: string, userId: string) {

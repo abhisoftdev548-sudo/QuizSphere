@@ -29,6 +29,8 @@ export type ExploreItem = {
   votingFee?: number;
   difficulty?: 'beginner' | 'intermediate' | 'advanced';
   questionCount?: number;
+  creatorRatingAverage?: number | null;
+  creatorRatingCount?: number | null;
   timeLimitSeconds?: number | null;
   attemptCount?: number;
   voteCount?: number | null;

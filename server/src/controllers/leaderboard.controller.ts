@@ -3,7 +3,9 @@ import { Types } from 'mongoose';
 import { Poll } from '../models/Poll.js';
 import { Quiz } from '../models/Quiz.js';
 import { QuizAttempt } from '../models/QuizAttempt.js';
+import { CreatorRating } from '../models/CreatorRating.js';
 import { User } from '../models/User.js';
+import { qualifiesCreatorRating } from '../services/creatorRating.service.js';
 import { quizAttemptLeaderboardPipeline } from '../services/leaderboard.service.js';
 import { sendData } from '../utils/http.js';
 
@@ -28,10 +30,12 @@ export async function leaderboard(req: Request, res: Response): Promise<void> {
   const dateMatch = start ? { $gte: start } : { $exists: true };
   let ranked: Array<any> = [];
   if (type === 'creators') {
-    const [quizRows, pollRows] = await Promise.all([
+    const [quizRows, pollRows, ratingRows] = await Promise.all([
       Quiz.aggregate([{ $match: { status: 'published', publishedAt: dateMatch } }, { $group: { _id: '$creatorId', published: { $sum: 1 }, engagement: { $sum: '$attemptCount' } } }]),
       Poll.aggregate([{ $match: { status: 'published', publishedAt: dateMatch } }, { $group: { _id: '$creatorId', published: { $sum: 1 }, engagement: { $sum: '$voteCount' } } }]),
+      CreatorRating.aggregate([{ $match: { createdAt: dateMatch } }, { $group: { _id: '$creatorId', averageRating: { $avg: '$rating' }, ratingCount: { $sum: 1 } } }]),
     ]);
+    const ratingsByUser = new Map(ratingRows.map((row) => [String(row._id), { averageRating: Math.round(row.averageRating * 10) / 10, ratingCount: row.ratingCount }]));
     const byUser = new Map<string, { published: number; engagement: number }>();
     for (const row of [...quizRows, ...pollRows]) {
       const key = String(row._id);
@@ -40,8 +44,13 @@ export async function leaderboard(req: Request, res: Response): Promise<void> {
       current.engagement += row.engagement;
       byUser.set(key, current);
     }
-    ranked = [...byUser.entries()].filter(([, stats]) => stats.published > 0).map(([id, stats]) => ({ id, score: stats.engagement, publishedCount: stats.published, engagement: stats.engagement }));
-    ranked.sort((a, b) => b.score - a.score || b.publishedCount - a.publishedCount || a.id.localeCompare(b.id));
+    ranked = [...byUser.entries()].filter(([, stats]) => stats.published > 0).map(([id, stats]) => {
+      const ratingStats = ratingsByUser.get(id) ?? { averageRating: 0, ratingCount: 0 };
+      return { id, score: stats.engagement, publishedCount: stats.published, engagement: stats.engagement, ...ratingStats, ratingQualified: qualifiesCreatorRating(ratingStats.ratingCount) };
+    });
+    ranked.sort((a, b) => Number(b.ratingQualified) - Number(a.ratingQualified)
+      || (a.ratingQualified ? b.averageRating - a.averageRating || b.ratingCount - a.ratingCount : b.engagement - a.engagement || b.publishedCount - a.publishedCount)
+      || b.engagement - a.engagement || b.publishedCount - a.publishedCount || a.id.localeCompare(b.id));
   } else {
     const aggregate = await QuizAttempt.aggregate(quizAttemptLeaderboardPipeline(dateMatch));
     ranked = aggregate.map((row) => ({ id: String(row._id), score: type === 'consistency' ? row.passed : Math.round(row.averageScore), attempts: row.attempts, passed: row.passed, bestScore: row.bestScore, averageScore: Math.round(row.averageScore), passRate: Math.round((row.passed / row.attempts) * 100) }));
@@ -53,7 +62,7 @@ export async function leaderboard(req: Request, res: Response): Promise<void> {
   const items = pageUsers.flatMap((row, index) => {
     const user = usersById.get(row.id);
     if (!user) return [];
-    return [{ rank: index + 1, user: { id: row.id, username: user.username, displayName: user.displayName, avatarUrl: user.avatarUrl ?? null }, score: row.score, attempts: row.attempts ?? null, passed: row.passed ?? null, bestScore: row.bestScore ?? null, averageScore: row.averageScore ?? null, passRate: row.passRate ?? null, publishedCount: row.publishedCount ?? null, engagement: row.engagement ?? null }];
+    return [{ rank: index + 1, user: { id: row.id, username: user.username, displayName: user.displayName, avatarUrl: user.avatarUrl ?? null }, score: row.score, attempts: row.attempts ?? null, passed: row.passed ?? null, bestScore: row.bestScore ?? null, averageScore: row.averageScore ?? null, passRate: row.passRate ?? null, publishedCount: row.publishedCount ?? null, engagement: row.engagement ?? null, averageRating: row.averageRating ?? null, ratingCount: row.ratingCount ?? null }];
   });
   const meIndex = items.findIndex((item) => item.user.id === req.auth?.userId);
   sendData(res, { type, period, items, currentUser: meIndex >= 0 ? { ...items[meIndex], isCurrentUser: true } : null, currentUserRank: meIndex >= 0 ? meIndex + 1 : null });

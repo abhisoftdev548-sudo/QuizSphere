@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { ArrowDown, ArrowUpRight, Clock3, Coins, Search, SlidersHorizontal, Sparkles, UsersRound } from 'lucide-react';
+import { ArrowDown, ArrowUpRight, Clock3, Coins, Search, SlidersHorizontal, Sparkles, Star, UsersRound } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { Button, Card, EmptyState, PageHeader, PageSkeleton, SelectInput, TextInput } from '../components/ui';
 import { getData, apiErrorMessage } from '../services/api';
@@ -16,7 +16,7 @@ export default function ExplorePage() {
   const [type, setType] = useState('all');
   const [categoryId, setCategoryId] = useState('all');
   const [difficulty, setDifficulty] = useState('all');
-  const [sort, setSort] = useState('newest');
+  const [sort, setSort] = useState('top_rated');
   useEffect(() => { const id = window.setTimeout(() => setSearch(searchInput.trim()), 250); return () => window.clearTimeout(id); }, [searchInput]);
 
   const categories = useQuery({ queryKey: ['categories'], queryFn: () => getData<{ items: Category[] }>('/explore/categories').then((value) => value.items) });
@@ -43,7 +43,7 @@ export default function ExplorePage() {
         <SelectInput value={type} onChange={(event) => setType(event.target.value)} aria-label="Content type"><option value="all">All content</option><option value="quiz">Quizzes</option><option value="poll">Polls</option></SelectInput>
         <SelectInput value={categoryId} onChange={(event) => setCategoryId(event.target.value)} aria-label="Category"><option value="all">All categories</option>{categories.data?.map((category) => <option key={category.id ?? category._id} value={category.id ?? category._id}>{category.name}</option>)}</SelectInput>
         <SelectInput value={difficulty} onChange={(event) => setDifficulty(event.target.value)} disabled={type === 'poll'} aria-label="Difficulty"><option value="all">Any difficulty</option><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></SelectInput>
-        <SelectInput value={sort} onChange={(event) => setSort(event.target.value)} aria-label="Sort results"><option value="newest">Recently published</option><option value="fee_low">Lowest entry fee</option><option value="closing_soon">Closing soon</option></SelectInput>
+        <SelectInput value={sort} onChange={(event) => setSort(event.target.value)} aria-label="Sort results"><option value="top_rated">Top rated creators</option><option value="newest">Recently published</option><option value="fee_low">Lowest entry fee</option><option value="closing_soon">Closing soon</option></SelectInput>
       </div>
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs text-slate-400"><span className="inline-flex items-center gap-1.5"><SlidersHorizontal size={13} />Showing approved, currently available content</span><span>{query.data?.pages[0]?.pagination.total ?? 0} results</span></div>
     </Card>
@@ -73,6 +73,7 @@ function ExploreCard({ item, base }: { item: ExploreItem; base: string }) {
         {!isQuiz && item.voteCount !== null && item.voteCount !== undefined && <span className="inline-flex items-center gap-1"><UsersRound size={13} />{item.voteCount} votes</span>}
         {isQuiz && item.timeLimitSeconds && <span className="inline-flex items-center gap-1"><Clock3 size={13} />{Math.ceil(item.timeLimitSeconds / 60)} min</span>}
       </div>
+      {isQuiz && (item.creatorRatingCount ?? 0) > 0 && <p className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700"><Star size={14} className="fill-amber-400 text-amber-500" />{item.creatorRatingAverage?.toFixed(1)} <span className="font-normal text-slate-400">creator · {item.creatorRatingCount} participant ratings</span></p>}
       <div className="mt-auto pt-5">
         <div className="flex items-center justify-between border-t border-slate-100 pt-4">
           <div className="min-w-0"><p className="truncate text-xs font-medium text-slate-500">By {item.creator?.displayName ?? 'QuizSphere creator'}</p><p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-700"><Coins size={13} className="text-brand-600" />{isQuiz ? item.entryFee ?? 0 : item.votingFee ?? 0} QCoins {isQuiz ? 'entry' : 'to vote'}</p></div>

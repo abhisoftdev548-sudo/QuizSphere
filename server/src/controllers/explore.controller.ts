@@ -6,6 +6,7 @@ import { PollVote } from '../models/PollVote.js';
 import { Quiz, QuizVersion } from '../models/Quiz.js';
 import { QuizAttempt } from '../models/QuizAttempt.js';
 import { QuizPrizePool } from '../models/PrizePool.js';
+import { CREATOR_RATING_PROMOTION_MINIMUM, qualifiesCreatorRating } from '../services/creatorRating.service.js';
 import { getSpecialEventResults } from '../services/specialEventSettlement.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { sendData, pageNumber } from '../utils/http.js';
@@ -42,7 +43,7 @@ export async function explore(req: Request, res: Response): Promise<void> {
   const regex = search ? new RegExp(escaped(search), 'i') : null;
   const categoryId = typeof req.query.categoryId === 'string' && Types.ObjectId.isValid(req.query.categoryId) ? req.query.categoryId : undefined;
   const difficulty = ['beginner', 'intermediate', 'advanced'].includes(String(req.query.difficulty)) ? req.query.difficulty : undefined;
-  const sort = ['newest', 'fee_low', 'closing_soon'].includes(String(req.query.sort)) ? String(req.query.sort) : 'newest';
+  const sort = ['newest', 'fee_low', 'closing_soon', 'top_rated'].includes(String(req.query.sort)) ? String(req.query.sort) : 'newest';
   const time = now();
   const quizQuery: Record<string, unknown> = { status: 'published', $and: [{ $or: [{ closesAt: null }, { closesAt: { $gt: time } }, { closesAt: { $lte: time }, $or: [{ quizType: 'special_event' }, { quizType: null }] }] }] };
   const pollQuery: Record<string, unknown> = { status: 'published', $and: [{ $or: [{ startsAt: null }, { startsAt: { $lte: time } }] }, { $or: [{ closesAt: null }, { closesAt: { $gt: time } }] }] };
@@ -58,7 +59,9 @@ export async function explore(req: Request, res: Response): Promise<void> {
   const pollSort: Record<string, 1 | -1> = sort === 'fee_low' ? { votingFee: 1, publishedAt: -1 } : sort === 'closing_soon' ? { closesAt: 1, publishedAt: -1 } : { publishedAt: -1 };
 
   const [quizItems, pollItems, quizTotal, pollTotal] = await Promise.all([
-    type === 'poll' ? [] : Quiz.find(quizQuery).sort(quizSort).skip(skip).limit(pageSize).populate('creatorId', 'username displayName avatarUrl').populate('categoryId', 'name').lean(),
+    type === 'poll' ? [] : sort === 'top_rated'
+      ? findTopRatedQuizzes(quizQuery, skip, pageSize)
+      : Quiz.find(quizQuery).sort(quizSort).skip(skip).limit(pageSize).populate('creatorId', 'username displayName avatarUrl').populate('categoryId', 'name').lean(),
     type === 'quiz' ? [] : Poll.find(pollQuery).sort(pollSort).skip(skip).limit(pageSize).populate('creatorId', 'username displayName avatarUrl').populate('categoryId', 'name').lean(),
     type === 'poll' ? 0 : Quiz.countDocuments(quizQuery),
     type === 'quiz' ? 0 : Poll.countDocuments(pollQuery),
@@ -67,6 +70,7 @@ export async function explore(req: Request, res: Response): Promise<void> {
     id: String(item._id), type: 'quiz', title: item.title, description: item.description, category: item.categoryId?.name ?? null,
     quizType: item.quizType ?? (item.closesAt ? 'special_event' : 'general'), startsAt: item.startsAt ?? null, difficulty: item.difficulty, questionCount: item.questionCount, timeLimitSeconds: item.timeLimitSeconds,
     creator: item.creatorId ? { id: String(item.creatorId._id), username: item.creatorId.username, displayName: item.creatorId.displayName, avatarUrl: item.creatorId.avatarUrl ?? null } : null,
+    creatorRatingAverage: item.creatorRatingAverage ?? null, creatorRatingCount: item.creatorRatingCount ?? null, creatorRatingQualified: item.creatorRatingQualified ?? false,
     entryFee: item.entryFee, prizeRules: item.prizeRules, creatorFundedPrize: item.creatorFundedPrize,
     attemptCount: item.attemptCount, publishedAt: item.publishedAt, closesAt: item.closesAt, closed: Boolean(item.closesAt && item.closesAt <= time),
   }));
@@ -79,12 +83,55 @@ export async function explore(req: Request, res: Response): Promise<void> {
   }));
   const combined = [...quizzes, ...polls];
   if (type === 'all') combined.sort((a, b) => {
+    if (sort === 'top_rated') {
+      const aCount = (a as any).creatorRatingCount ?? 0;
+      const bCount = (b as any).creatorRatingCount ?? 0;
+      const aQualified = qualifiesCreatorRating(aCount);
+      const bQualified = qualifiesCreatorRating(bCount);
+      return Number(bQualified) - Number(aQualified) || (bQualified ? ((b as any).creatorRatingAverage ?? 0) - ((a as any).creatorRatingAverage ?? 0) || bCount - aCount : 0) || new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime();
+    }
     if (sort === 'fee_low') return ((a as any).entryFee ?? (a as any).votingFee ?? 0) - ((b as any).entryFee ?? (b as any).votingFee ?? 0) || new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime();
     if (sort === 'closing_soon') return (a.closesAt ? new Date(a.closesAt).getTime() : Number.MAX_SAFE_INTEGER) - (b.closesAt ? new Date(b.closesAt).getTime() : Number.MAX_SAFE_INTEGER);
     return new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime();
   });
   const items = type === 'all' ? combined.slice((page - 1) * limit, page * limit) : combined;
   sendData(res, { items, pagination: { page, limit, total: quizTotal + pollTotal, pages: Math.ceil((quizTotal + pollTotal) / limit) } });
+}
+
+async function findTopRatedQuizzes(query: Record<string, unknown>, skip: number, limit: number) {
+  const candidates = await Quiz.aggregate([
+    { $match: query },
+    { $lookup: {
+      from: 'creatorratings',
+      let: { creatorId: '$creatorId' },
+      pipeline: [
+        { $match: { $expr: { $eq: ['$creatorId', '$$creatorId'] } } },
+        { $group: { _id: null, averageRating: { $avg: '$rating' }, ratingCount: { $sum: 1 } } },
+      ],
+      as: 'creatorRatingStats',
+    } },
+    { $addFields: {
+      creatorRatingAverage: { $ifNull: [{ $arrayElemAt: ['$creatorRatingStats.averageRating', 0] }, 0] },
+      creatorRatingCount: { $ifNull: [{ $arrayElemAt: ['$creatorRatingStats.ratingCount', 0] }, 0] },
+    } },
+    { $addFields: { ratingQualified: { $gte: ['$creatorRatingCount', CREATOR_RATING_PROMOTION_MINIMUM] } } },
+    { $addFields: {
+      ratingSortAverage: { $cond: ['$ratingQualified', '$creatorRatingAverage', 0] },
+      ratingSortCount: { $cond: ['$ratingQualified', '$creatorRatingCount', 0] },
+    } },
+    { $sort: { ratingQualified: -1, ratingSortAverage: -1, ratingSortCount: -1, publishedAt: -1 } },
+    { $skip: skip },
+    { $limit: limit },
+    { $project: { _id: 1, creatorRatingAverage: 1, creatorRatingCount: 1, ratingQualified: 1 } },
+  ]).exec();
+  if (!candidates.length) return [];
+  const items = await Quiz.find({ _id: { $in: candidates.map((item) => item._id) } })
+    .populate('creatorId', 'username displayName avatarUrl').populate('categoryId', 'name').lean() as any[];
+  const itemsById = new Map(items.map((item) => [String(item._id), item]));
+  return candidates.flatMap((candidate) => {
+    const item = itemsById.get(String(candidate._id));
+    return item ? [{ ...item, creatorRatingAverage: Math.round(candidate.creatorRatingAverage * 10) / 10, creatorRatingCount: candidate.creatorRatingCount, creatorRatingQualified: candidate.ratingQualified }] : [];
+  });
 }
 
 export async function quizDetail(req: Request, res: Response): Promise<void> {

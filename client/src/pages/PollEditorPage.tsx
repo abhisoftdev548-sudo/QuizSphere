@@ -27,7 +27,7 @@ export default function PollEditorPage() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const requestKey = useRef(crypto.randomUUID());
-  const actionRef = useRef<'save' | 'submit'>('save');
+  const actionRef = useRef<'save' | 'publish'>('save');
   const form = useForm<PollValues>({ resolver: zodResolver(pollSchema), defaultValues: { title: '', description: '', categoryId: null, tags: [], options: [{ text: '' }, { text: '' }], allowMultiple: false, anonymous: true, resultVisibility: 'after_vote', allowVoteChange: false, startsAt: '', closesAt: '', votingFee: 0 } });
   const optionsArray = useFieldArray({ control: form.control, name: 'options' });
   const categories = useQuery({ queryKey: ['categories'], queryFn: () => getData<{ items: Category[] }>('/explore/categories').then((result) => result.items.filter((category) => category.contentType === 'poll' || category.contentType === 'both')) });
@@ -41,7 +41,7 @@ export default function PollEditorPage() {
     }
   }, [draft.data, form]);
   const isLoading = (editing && draft.isLoading) || rules.isLoading;
-  const locked = editing && draft.data && !['draft', 'changes_requested', 'rejected'].includes(draft.data.item.status);
+  const locked = editing && draft.data && !['draft', 'changes_requested', 'rejected', 'suspended'].includes(draft.data.item.status);
 
   async function persist(values: PollValues) {
     const payload = {
@@ -54,23 +54,24 @@ export default function PollEditorPage() {
     };
     try {
       const saved = editing ? await putData<{ item: { id: string } }>(`/creator/polls/${id}`, payload) : await postData<{ item: { id: string } }>('/creator/polls', payload, { 'Idempotency-Key': requestKey.current });
-      if (actionRef.current === 'submit') {
-        await postData(`/creator/polls/${saved.item.id}/submit`);
-        toast('Poll submitted for administrator review.');
+      if (actionRef.current === 'publish') {
+        await postData(`/creator/poll/${saved.item.id}/publish`);
+        toast('Your poll is now published.');
       } else toast('Poll draft saved.');
       navigate('/app/creator-studio');
     } catch (error) { form.setError('root', { message: apiErrorMessage(error) }); }
   }
-  const saveAction = (action: 'save' | 'submit') => { actionRef.current = action; void form.handleSubmit(persist)(); };
+  const saveAction = (action: 'save' | 'publish') => { actionRef.current = action; void form.handleSubmit(persist)(); };
 
   if (isLoading) return <div className="page-container"><PageSkeleton /></div>;
   if (draft.isError) return <div className="page-container"><Card><EmptyState title="Poll draft unavailable" description={apiErrorMessage(draft.error)} action={<Link to="/app/creator-studio" className="text-sm font-semibold text-brand-700">Back to Creator Studio</Link>} /></Card></div>;
-  if (locked) return <div className="page-container"><Card><EmptyState title="This poll can’t be edited right now" description="Published or in-review content must finish its review workflow before changes can be made." action={<Link to="/app/creator-studio" className="text-sm font-semibold text-brand-700">Return to Creator Studio</Link>} /></Card></div>;
+  if (locked) return <div className="page-container"><Card><EmptyState title="This poll can’t be edited right now" description="Published or in-review content cannot be changed. A suspended poll can be edited and republished from here." action={<Link to="/app/creator-studio" className="text-sm font-semibold text-brand-700">Return to Creator Studio</Link>} /></Card></div>;
 
   return <div className="page-container">
     <Link to="/app/creator-studio" className="mb-5 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-brand-700"><ArrowLeft size={14} />Creator Studio</Link>
-    <PageHeader title={editing ? 'Edit poll draft' : 'Create a poll'} description="Ask a clear question, set your voting rules, and submit when everything is ready." eyebrow="Creator Studio" />
+    <PageHeader title={editing ? 'Edit poll draft' : 'Create a poll'} description="Ask a clear question, set your voting rules, and publish it when everything is ready." eyebrow="Creator Studio" />
     {draft.data?.item?.reviewFeedback && <div className="mb-5 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800"><strong className="font-semibold">Review feedback:</strong> {draft.data.item.reviewFeedback}</div>}
+    {draft.data?.item?.status === 'suspended' && draft.data.item.suspensionReason && <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"><strong className="font-semibold">Admin suspension reason:</strong> {draft.data.item.suspensionReason}</div>}
     <form onSubmit={(event) => event.preventDefault()} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
       <div className="space-y-5">
         <Card className="p-5 sm:p-6"><h2 className="text-sm font-bold text-ink">Poll question</h2><div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -92,7 +93,7 @@ export default function PollEditorPage() {
         <Card className="p-5"><h2 className="text-sm font-bold text-ink">Availability</h2><div className="mt-4 space-y-4"><Field label="Starts at"><TextInput type="datetime-local" {...form.register('startsAt')} /></Field><Field label="Closes at" error={form.formState.errors.closesAt?.message}><TextInput type="datetime-local" {...form.register('closesAt')} /></Field></div></Card>
         <Card className="p-4"><div className="flex gap-2.5"><Vote size={17} className="mt-0.5 shrink-0 text-brand-600" /><p className="text-xs leading-5 text-slate-500">Polls do not have objectively correct answers. Rewards are not enabled by this editor; voting fees and result visibility are shown to participants before they vote.</p></div></Card>
         {form.formState.errors.root && <p className="rounded-xl bg-rose-50 px-3 py-2.5 text-xs text-rose-700">{form.formState.errors.root.message}</p>}
-        <div className="space-y-2.5"><Button type="button" className="w-full" disabled={form.formState.isSubmitting} onClick={() => saveAction('submit')}>{form.formState.isSubmitting ? 'Saving…' : 'Submit for review'}<FileCheck2 size={16} /></Button><Button type="button" variant="outline" className="w-full" disabled={form.formState.isSubmitting} onClick={() => saveAction('save')}>Save as draft</Button><p className="text-center text-[10px] leading-4 text-slate-400">Only reviewed and approved polls can be published.</p></div>
+        <div className="space-y-2.5"><Button type="button" className="w-full" disabled={form.formState.isSubmitting} onClick={() => saveAction('publish')}>{form.formState.isSubmitting ? 'Saving…' : 'Publish poll'}<FileCheck2 size={16} /></Button><Button type="button" variant="outline" className="w-full" disabled={form.formState.isSubmitting} onClick={() => saveAction('save')}>Save as draft</Button><p className="text-center text-[10px] leading-4 text-slate-400">Your poll is published immediately. Admins may suspend it if needed.</p></div>
       </aside>
     </form>
   </div>;

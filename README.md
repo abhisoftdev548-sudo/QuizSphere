@@ -9,7 +9,8 @@ QuizSphere is a full-stack community platform for creating and participating in 
 - Express REST API under `/api/v1`, Zod validation, centralized errors, rate limits, Helmet, CORS allowlist, CSRF double-submit checks, bcrypt password hashes, short-lived access cookies, rotating refresh sessions, and session revocation.
 - Mongoose schemas for users, refresh sessions, categories, platform rules, quiz versions/questions, polls/options, attempts, votes, ledger entries, prize-pool projections, reviews, notifications, ratings, reports, and audit records.
 - Server-calculated quiz scoring, timer enforcement, private answer payloads, vote uniqueness, result-visibility checks, QCoin ledger entries, and admin-configurable creation and participation limits.
-- Creators can publish quizzes without admin approval; polls continue through admin review. Admins can suspend published quizzes with a required reason, which stays visible to the creator and allows editing and republishing.
+- Creators can publish quizzes and polls without admin approval. Admins can suspend published quizzes or polls with a required reason; suspended content stays in its creator's studio and can be edited and republished.
+- Participants can rate a quiz creator from 1 to 5 after finishing a quiz. Each participant has one editable rating per quiz; creator ratings appear on the creator leaderboard, and creators with at least five ratings are promoted in Explore's default Top rated creators order.
 - General quizzes are open-ended and may pay one fixed reward per passing participant from a creator-funded pool. Special Event quizzes have scheduled start/close times, immediate private results, post-close public rankings, and automatically settled rank prizes after close.
 - Admins set the free question limit, whether Special Events require a Creator Pass, pass purchase prices, and fixed platform buyback prices. Required participation passes transfer to the quiz creator. Users can sell owned passes directly back to QuizSphere at the configured buyback price.
 - Signup bonus is credited by an idempotent ledger transaction (100 QCoins by default). MongoDB transactions are required for multi-document economy and moderation operations.
@@ -18,7 +19,7 @@ QuizSphere is a full-stack community platform for creating and participating in 
 
 ### Not yet complete
 
-This is an incremental implementation, not a claim that every item in the supplied product brief is finished. Poll reward funding/settlement, full refund/reconciliation workflows, upload/Cloudinary support, email verification, community-rating/report moderation screens, and some extended admin audit/user-inspection workflows still need implementation and end-to-end verification. The quiz prize and pass flows have unit coverage but still need MongoDB-backed integration and production-like concurrency testing.
+This is an incremental implementation, not a claim that every item in the supplied product brief is finished. Poll reward funding/settlement, full refund/reconciliation workflows, upload/Cloudinary support, email verification, report moderation screens, and some extended admin audit/user-inspection workflows still need implementation and end-to-end verification. Quiz creator ratings and the prize/pass flows still need MongoDB-backed integration and production-like concurrency testing.
 
 ## Requirements
 
@@ -90,12 +91,12 @@ All endpoints return `{ "success": true, "data": ... }` on success and `{ "succe
 - `GET /api/v1/platform/rules`
 - `GET /api/v1/explore` with `type`, `search`, `categoryId`, `difficulty`, `sort`, `page`, `limit`; `GET /categories`, `/quizzes/:id`, `/quizzes/:id/results`, `/polls/:id`
 - `GET /api/v1/users/me/overview|attempts|notifications|wallet|wallet/transactions`; profile and notification read endpoints use `PATCH`
-- `/api/v1/creator` for drafts, creator-published quizzes, poll submissions, creator analytics, and publishing approved polls
-- `/api/v1/participation` for quiz attempt creation, answer saves, submission, and result retrieval
+- `/api/v1/creator` for drafts, creator-published quizzes and polls, creator analytics, and content publishing
+- `/api/v1/participation` for quiz attempt creation, answer saves, submission, result retrieval, and post-completion creator ratings
 - `/api/v1/passes` for pass inventory, QCoin purchases, and platform buyback (`POST /sell`)
 - `/api/v1/polls/:id/vote` and `/api/v1/polls/me/poll-votes`
 - `GET /api/v1/leaderboards?type=performance|consistency|creators&period=week|month|all`
-- `/api/v1/admin` for overview, reviews, published-quiz suspension, users, configuration, categories, ledger, adjustments, settlements, and audit logs
+- `/api/v1/admin` for overview, reviews, published quiz/poll suspension, users, configuration, categories, ledger, adjustments, settlements, and audit logs
 
 Wallet-moving purchases, quiz creation, and pass sales require an `Idempotency-Key`. Prices and eligibility are checked on the server.
 

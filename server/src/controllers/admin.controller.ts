@@ -72,7 +72,7 @@ export async function reviewDetail(req: Request, res: Response): Promise<void> {
     const poll = await Poll.findById(id).populate('creatorId', 'username displayName email').populate('categoryId', 'name').lean() as any;
     if (!poll) throw new ApiError(404, 'Poll submission not found.', 'CONTENT_NOT_FOUND');
     const history = await AdminReview.find({ targetType: 'poll', targetId: poll._id }).sort({ createdAt: -1 }).populate('adminId', 'username displayName').lean();
-    sendData(res, { item: { id: String(poll._id), type, title: poll.title, description: poll.description, category: poll.categoryId?.name ?? null, creator: publicAdminUser(poll.creatorId), status: poll.status, tags: poll.tags, options: poll.options.map((option: any) => ({ id: String(option._id), text: option.text })), allowMultiple: poll.allowMultiple, anonymous: poll.anonymous, resultVisibility: poll.resultVisibility, allowVoteChange: poll.allowVoteChange, startsAt: poll.startsAt, closesAt: poll.closesAt, votingFee: poll.votingFee, reward: poll.reward, reviewFeedback: poll.reviewFeedback, version: poll.version }, history });
+    sendData(res, { item: { id: String(poll._id), type, title: poll.title, description: poll.description, category: poll.categoryId?.name ?? null, creator: publicAdminUser(poll.creatorId), status: poll.status, tags: poll.tags, options: poll.options.map((option: any) => ({ id: String(option._id), text: option.text })), allowMultiple: poll.allowMultiple, anonymous: poll.anonymous, resultVisibility: poll.resultVisibility, allowVoteChange: poll.allowVoteChange, startsAt: poll.startsAt, closesAt: poll.closesAt, votingFee: poll.votingFee, reward: poll.reward, reviewFeedback: poll.reviewFeedback, suspensionReason: poll.suspensionReason ?? '', version: poll.version }, history });
   } else throw new ApiError(400, 'Content type must be quiz or poll.', 'INVALID_CONTENT_TYPE');
 }
 
@@ -97,40 +97,50 @@ export async function decideReview(req: Request, res: Response): Promise<void> {
 }
 
 export async function suspendPublishedQuiz(req: Request, res: Response): Promise<void> {
+  await suspendPublishedContent(req, res, 'quiz');
+}
+
+export async function suspendPublishedPoll(req: Request, res: Response): Promise<void> {
+  await suspendPublishedContent(req, res, 'poll');
+}
+
+async function suspendPublishedContent(req: Request, res: Response, type: 'quiz' | 'poll'): Promise<void> {
   const { reason } = req.body as { reason: string };
   const result = await runInTransaction(async (session) => {
-    const quiz = await Quiz.findOne({ _id: req.params.id, status: 'published' }).session(session);
-    if (!quiz) throw new ApiError(404, 'Published quiz not found.', 'CONTENT_NOT_FOUND');
-    quiz.status = 'suspended';
-    quiz.suspensionReason = reason;
-    await quiz.save({ session });
+    const content: any = type === 'quiz'
+      ? await Quiz.findOne({ _id: req.params.id, status: 'published' }).session(session)
+      : await Poll.findOne({ _id: req.params.id, status: 'published' }).session(session);
+    if (!content) throw new ApiError(404, `Published ${type} not found.`, 'CONTENT_NOT_FOUND');
+    content.status = 'suspended';
+    content.suspensionReason = reason;
+    await content.save({ session });
     await AdminReview.create([{
-      targetType: 'quiz',
-      targetId: quiz._id,
-      contentVersion: quiz.version,
+      targetType: type,
+      targetId: content._id,
+      contentVersion: content.version,
       adminId: req.auth!.userId,
       decision: 'unpublished',
       note: reason,
     }], { session });
     await Notification.create([{
-      userId: quiz.creatorId,
+      userId: content.creatorId,
       type: 'account_update',
-      title: 'Quiz suspended by admin',
-      message: `“${quiz.title}” was removed from public listings. Reason: ${reason.slice(0, 250)}`,
+      title: `${type === 'quiz' ? 'Quiz' : 'Poll'} suspended by admin`,
+      message: `“${content.title}” was removed from public listings. Reason: ${reason.slice(0, 250)}`,
       link: '/app/creator-studio',
-      relatedType: 'quiz',
-      relatedId: quiz._id,
+      relatedType: type,
+      relatedId: content._id,
     }], { session });
     await AuditLog.create([{
       actorId: req.auth!.userId,
-      action: 'quiz_suspended',
-      targetType: 'quiz',
-      targetId: String(quiz._id),
+      action: `${type}_suspended`,
+      targetType: type,
+      targetId: String(content._id),
       reason,
       ipAddress: req.ip ?? '',
-      metadata: { version: quiz.version, creatorFundedPrize: quiz.creatorFundedPrize, quizType: quiz.quizType },
+      metadata: { version: content.version },
     }], { session });
-    return { id: String(quiz._id), status: quiz.status, suspensionReason: quiz.suspensionReason };
+    return { id: String(content._id), type, status: content.status, suspensionReason: content.suspensionReason };
   });
   sendData(res, result);
 }

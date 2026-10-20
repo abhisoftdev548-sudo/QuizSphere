@@ -24,9 +24,10 @@ const pollSchema = new Schema({
   closesAt: { type: Date, default: null },
   votingFee: { type: Number, default: 0, min: 0 },
   reward: { type: rewardSchema, default: () => ({}) },
-  status: { type: String, enum: ['draft', 'pending_review', 'changes_requested', 'approved', 'published', 'rejected', 'closed', 'archived'], default: 'draft', index: true },
+  status: { type: String, enum: ['draft', 'pending_review', 'changes_requested', 'approved', 'published', 'rejected', 'suspended', 'closed', 'archived'], default: 'draft', index: true },
   version: { type: Number, default: 1, min: 1 },
   reviewFeedback: { type: String, default: '', maxlength: 1000 },
+  suspensionReason: { type: String, default: '', maxlength: 1000 },
   voteCount: { type: Number, default: 0, min: 0 },
   publishedAt: { type: Date, default: null },
 }, { timestamps: true, versionKey: false });

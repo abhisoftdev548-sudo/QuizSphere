@@ -93,7 +93,7 @@ export async function updateQuiz(req: Request, res: Response): Promise<void> {
 
 export async function submitQuiz(req: Request, res: Response): Promise<void> {
   req.params.type = 'quiz';
-  await publishApproved(req, res);
+  await publishCreatorContent(req, res);
 }
 
 export async function createPoll(req: Request, res: Response): Promise<void> {
@@ -136,7 +136,7 @@ export async function updatePoll(req: Request, res: Response): Promise<void> {
   await categoryExists(data.categoryId, 'poll');
   const poll = await Poll.findOne({ _id: req.params.id, creatorId: ownerId(req) });
   if (!poll) throw new ApiError(404, 'Poll not found.', 'CONTENT_NOT_FOUND');
-  if (!['draft', 'changes_requested', 'rejected'].includes(poll.status)) throw new ApiError(409, 'This poll cannot be edited in its current review or publication state.', 'CONTENT_NOT_EDITABLE');
+  if (!['draft', 'changes_requested', 'rejected', 'suspended'].includes(poll.status)) throw new ApiError(409, 'This poll cannot be edited in its current review or publication state.', 'CONTENT_NOT_EDITABLE');
   poll.set({
     title: data.title, description: data.description, categoryId: data.categoryId || null, tags: data.tags,
     options: data.options.map((text: string) => ({ text })), allowMultiple: data.allowMultiple, anonymous: data.anonymous,
@@ -149,24 +149,18 @@ export async function updatePoll(req: Request, res: Response): Promise<void> {
 }
 
 export async function submitPoll(req: Request, res: Response): Promise<void> {
-  const poll = await Poll.findOne({ _id: req.params.id, creatorId: ownerId(req) });
-  if (!poll) throw new ApiError(404, 'Poll not found.', 'CONTENT_NOT_FOUND');
-  if (!['draft', 'changes_requested'].includes(poll.status)) throw new ApiError(409, 'Only a draft or requested revision can be submitted.', 'INVALID_CONTENT_STATE');
-  if (poll.options.length < 2) throw new ApiError(422, 'A poll needs at least two options.', 'INCOMPLETE_CONTENT');
-  poll.status = 'pending_review';
-  poll.reviewFeedback = '';
-  await poll.save();
-  sendData(res, { item: serializeCreatorPoll(poll) });
+  req.params.type = 'poll';
+  await publishCreatorContent(req, res);
 }
 
-export async function publishApproved(req: Request, res: Response): Promise<void> {
+export async function publishCreatorContent(req: Request, res: Response): Promise<void> {
   const type = req.params.type;
   if (type !== 'quiz' && type !== 'poll') throw new ApiError(400, 'Content type must be quiz or poll.', 'INVALID_CONTENT_TYPE');
   const published = await runInTransaction(async (session) => {
     const item: any = type === 'quiz'
-      ? await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req), status: { $in: ['approved', 'draft', 'changes_requested', 'rejected', 'suspended'] } }).session(session)
-      : await Poll.findOne({ _id: req.params.id, creatorId: ownerId(req), status: 'approved' }).session(session);
-    if (!item) throw new ApiError(404, type === 'quiz' ? 'Quiz draft not found.' : 'Approved poll not found.', 'CONTENT_NOT_FOUND');
+      ? await Quiz.findOne({ _id: req.params.id, creatorId: ownerId(req), status: { $in: ['approved', 'draft', 'pending_review', 'changes_requested', 'rejected', 'suspended'] } }).session(session)
+      : await Poll.findOne({ _id: req.params.id, creatorId: ownerId(req), status: { $in: ['approved', 'draft', 'pending_review', 'changes_requested', 'rejected', 'suspended'] } }).session(session);
+    if (!item) throw new ApiError(404, `${type === 'quiz' ? 'Quiz' : 'Poll'} draft not found.`, 'CONTENT_NOT_FOUND');
     if (type === 'quiz') {
       const existingPool = await QuizPrizePool.findOne({ quizId: item._id }).session(session);
       if (existingPool) {
@@ -196,7 +190,7 @@ export async function publishApproved(req: Request, res: Response): Promise<void
       action: 'content_published',
       targetType: type,
       targetId: String(item._id),
-      reason: type === 'quiz' ? 'Creator published quiz without admin approval.' : 'Creator published approved poll.',
+      reason: `Creator published ${type} without admin approval.`,
       ipAddress: req.ip ?? '',
       metadata: type === 'quiz' ? { quizType: item.quizType, creatorFundedPrize: item.creatorFundedPrize, prizeRules: item.prizeRules } : {},
     }], { session });
@@ -272,5 +266,5 @@ function serializeCreatorQuiz(quiz: any) {
 }
 function serializeCreatorPoll(poll: any) {
   if (!poll) return null;
-  return { id: String(poll._id), type: 'poll', title: poll.title, description: poll.description, category: poll.categoryId?.name ?? null, categoryId: poll.categoryId?._id ?? poll.categoryId ?? null, tags: poll.tags, status: poll.status, options: poll.options?.map((option: any) => ({ id: String(option._id), text: option.text })), allowMultiple: poll.allowMultiple, anonymous: poll.anonymous, resultVisibility: poll.resultVisibility, allowVoteChange: poll.allowVoteChange, startsAt: poll.startsAt, closesAt: poll.closesAt, votingFee: poll.votingFee, reviewFeedback: poll.reviewFeedback, version: poll.version, updatedAt: poll.updatedAt, createdAt: poll.createdAt, publishedAt: poll.publishedAt };
+  return { id: String(poll._id), type: 'poll', title: poll.title, description: poll.description, category: poll.categoryId?.name ?? null, categoryId: poll.categoryId?._id ?? poll.categoryId ?? null, tags: poll.tags, status: poll.status, options: poll.options?.map((option: any) => ({ id: String(option._id), text: option.text })), allowMultiple: poll.allowMultiple, anonymous: poll.anonymous, resultVisibility: poll.resultVisibility, allowVoteChange: poll.allowVoteChange, startsAt: poll.startsAt, closesAt: poll.closesAt, votingFee: poll.votingFee, reviewFeedback: poll.reviewFeedback, suspensionReason: poll.suspensionReason ?? '', version: poll.version, updatedAt: poll.updatedAt, createdAt: poll.createdAt, publishedAt: poll.publishedAt };
 }
